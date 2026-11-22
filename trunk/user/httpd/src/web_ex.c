@@ -2253,13 +2253,19 @@ static int adbyby_action_hook(int eid, webs_t wp, int argc, char **argv)
 	if (!strcmp(ad_action, "updateadb")) {
 		notify_rc(RCN_RESTART_UPDATEADB);
 	}
+	else if (!strcmp(ad_action, "restart") || !strcmp(ad_action, "start")) {
+		notify_rc(RCN_RESTART_ADBYBY);
+	}
+	else if (!strcmp(ad_action, "stop")) {
+		eval("/usr/bin/adbyby.sh", "stop");
+	}
 	websWrite(wp, "<script>restart_needed_time(%d);</script>\n", needed_seconds);
 	return 0;
 }
 
 static int adbyby_status_hook(int eid, webs_t wp, int argc, char **argv)
 {
-	int ad_status_code = pids("adbyby");
+	int ad_status_code = pids("nanoad");
 	websWrite(wp, "function adbyby_status() { return %d;}\n", ad_status_code);
 	return 0;
 }

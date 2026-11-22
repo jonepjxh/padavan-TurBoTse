@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NanoAd · 路由广告过滤</title>
+<style>
+:root{--bg:#0b1512;--panel:#12211c;--line:#243b32;--text:#e9f6ef;--muted:#8aa99a;--accent:#45e0a2;--warn:#ffca66;--danger:#ff7b7b}
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(circle at 15% -10%,#1b4938 0,transparent 38%),var(--bg);color:var(--text);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;min-height:100vh}
+.wrap{max-width:1120px;margin:auto;padding:22px 18px 48px}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px}
+.brand{display:flex;align-items:center;gap:11px}
+.logo{width:40px;height:40px;border-radius:12px;background:linear-gradient(145deg,#55efb5,#179168);display:grid;place-items:center;font-weight:800;color:#062319;box-shadow:0 8px 30px #16a77444}
+h1{font-size:21px;margin:0;letter-spacing:.3px}.sub{color:var(--muted);font-size:12px}
+.pill{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);background:#0e1d17;padding:7px 11px;border-radius:999px;font-size:12px;white-space:nowrap}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent)}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.card{background:linear-gradient(160deg,#15271f,#101c18);border:1px solid var(--line);border-radius:15px;padding:16px}
+.metric span{display:block;color:var(--muted);font-size:12px;margin-bottom:7px}.metric strong{font-size:25px;font-variant-numeric:tabular-nums}
+.metric small{color:var(--muted);font-size:11px}
+section{margin-top:18px}
+.section-title{display:flex;justify-content:space-between;align-items:center;margin:0 0 9px}
+h2{font-size:15px;margin:0;font-weight:650}.hint{font-size:12px;color:var(--muted)}
+.control-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:11px 0;border-bottom:1px dashed #243b32}
+.row:last-child{border:0}.row label{font-size:13px}.row .desc{display:block;color:var(--muted);font-size:11px;margin-top:2px}
+.switch{appearance:none;width:44px;height:24px;border-radius:99px;background:#2d4037;position:relative;cursor:pointer;flex:0 0 auto;transition:.2s;border:1px solid #3a5549}
+.switch:checked{background:#1b9c6d;border-color:#45e0a2}.switch:before{content:"";position:absolute;width:18px;height:18px;border-radius:50%;background:#d6e7df;top:2px;left:2px;transition:.2s}.switch:checked:before{left:22px;background:#fff}
+input[type=text],textarea{width:100%;background:#0b1713;border:1px solid #2c4439;color:var(--text);border-radius:9px;padding:10px 11px;font:13px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;outline:none}
+input[type=text]:focus,textarea:focus{border-color:#43ca94;box-shadow:0 0 0 3px #45e0a21c}
+textarea{resize:vertical;min-height:150px}
+select{background:#0b1713;border:1px solid #2c4439;color:var(--text);border-radius:9px;padding:9px}
+button{border:0;border-radius:9px;padding:9px 14px;font-weight:600;cursor:pointer;background:#20372d;color:var(--text);transition:.15s}
+button:hover{filter:brightness(1.13)}button.primary{background:linear-gradient(135deg,#52e9b2,#20a477);color:#062117}button:disabled{opacity:.5;cursor:wait}
+.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:11px}
+.tabs{display:flex;gap:7px;margin-bottom:9px}.tab{padding:7px 11px;border:1px solid var(--line);border-radius:8px;background:#0d1b16;color:var(--muted);cursor:pointer}.tab.on{color:var(--text);border-color:#3d8067;background:#153328}
+.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow:auto;background:#09130f;border:1px solid #20352c;border-radius:9px;padding:11px;margin:9px 0 0;color:#a8c8b8;font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
+.toast{position:fixed;right:18px;bottom:18px;background:#17372a;border:1px solid #3a8164;color:#ddfff0;padding:11px 15px;border-radius:10px;opacity:0;transform:translateY(10px);transition:.2s;pointer-events:none;max-width:calc(100vw - 36px);z-index:9}
+.toast.show{opacity:1;transform:none}.toast.err{border-color:#884848;background:#321d1d;color:#ffdede}
+.note{border-left:3px solid #3e876c;padding:9px 11px;background:#10251d;color:#b5d2c4;border-radius:0 8px 8px 0;font-size:12px;margin-top:10px}
+.testout{margin-top:9px;font-size:13px}
+.footer{text-align:center;color:#5f7b6e;font-size:11px;margin-top:30px}
+@media(max-width:760px){.grid{grid-template-columns:1fr 1fr}.control-grid{grid-template-columns:1fr}header{align-items:flex-start}.metric strong{font-size:21px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="brand"><div class="logo">N</div><div><h1>NanoAd</h1><div class="sub">K2P · Padavan 4.4 · DNS + HTTPS SNI</div></div></div>
+  <div class="pill"><span class="dot" id="dot"></span><span id="state">正在读取状态</span></div>
+</header>
+
+<section class="grid">
+  <div class="card metric"><span>DNS 查询</span><strong id="dnsTotal">–</strong><small id="dnsRate">阻塞率 –</small></div>
+  <div class="card metric"><span>DNS 已拦截</span><strong id="dnsBlocked">–</strong><small id="dnsLast">最近命中 –</small></div>
+  <div class="card metric"><span>HTTPS SNI</span><strong id="sniBlocked">–</strong><small id="sniInfo">连接 –</small></div>
+  <div class="card metric"><span>规则 / 内存</span><strong id="rules">–</strong><small id="rss">常驻内存 –</small></div>
+</section>
+
+<section class="card">
+  <div class="section-title"><h2>过滤开关</h2><span class="hint" id="ruleInfo">规则库 –</span></div>
+  <div class="control-grid">
+    <div>
+      <div class="row"><label>广告过滤总开关<span class="desc">关闭后立即停止 DNS/SNI 过滤，并恢复路由器原来的 DNS</span></label><input class="switch" type="checkbox" id="filterEnabled"></div>
+      <div class="row"><label>DNS 广告过滤<span class="desc">所有 HTTP/HTTPS 域名请求先过本地规则</span></label><input class="switch" type="checkbox" id="dnsEnabled"></div>
+      <div class="row"><label>HTTPS SNI 过滤<span class="desc">不解密流量，只按 TLS 域名阻断，不需要安装证书</span></label><input class="switch" type="checkbox" id="sniEnabled"></div>
+      <div class="row"><label>阻断 QUIC<span class="desc">强制视频/浏览器回退 TCP HTTPS，使 SNI 过滤生效</span></label><input class="switch" type="checkbox" id="blockQuic"></div>
+    </div>
+    <div>
+      <div class="row"><label>DNS 上游<span class="desc">最多 4 个，格式 IP:端口，逗号分隔</span><input type="text" id="upstreams" placeholder="223.5.5.5:53,119.29.29.29:53"></label></div>
+      <div class="row"><label>拦截响应<span class="desc">NXDOMAIN 兼容性最好；zero 返回 0.0.0.0 更适合部分电视</span><select id="response"><option value="nxdomain">NXDOMAIN</option><option value="zero">0.0.0.0 / ::</option></select></label></div>
+      <div class="actions"><button class="primary" id="saveSettings">保存并重启服务</button><button id="restart">仅重启</button></div>
+    </div>
+  </div>
+  <div class="note">HTTPS 内容级广告（例如视频贴片、网页内嵌广告）无法在不安装 CA 证书、不建立中间人的情况下按 URL 删除。本插件提供域名层 DNS 过滤和 TLS SNI 层阻断；页面内 URL 过滤请配合浏览器扩展。</div>
+</section>
+
+<section class="card">
+  <div class="section-title"><h2>管理账号</h2><span class="hint">修改 WebUI 登录凭据</span></div>
+  <div class="control-grid">
+    <div>
+      <div class="row"><label>用户名<span class="desc">1–32 位，字母、数字、点、横线、下划线</span></label><input type="text" id="webUser" maxlength="32" autocomplete="username" placeholder="admin"></div>
+    </div>
+    <div>
+      <div class="row"><label>新密码<span class="desc">4–64 位可见字符，不能包含冒号</span></label><input type="password" id="webPass" maxlength="64" autocomplete="new-password"></div>
+      <div class="row"><label>确认新密码<span class="desc">再次输入新密码</span></label><input type="password" id="webPass2" maxlength="64" autocomplete="new-password"></div>
+      <div class="actions"><button class="primary" id="saveAccount">保存账号</button></div>
+    </div>
+  </div>
+  <div class="note">修改后立即生效，当前页面会自动刷新并要求使用新账号登录。密码保存在 /etc/storage/nanoad/nanoad.conf（权限 0600）。</div>
+</section>
+
+<section class="grid" style="grid-template-columns:1.2fr .8fr">
+  <div class="card">
+    <div class="section-title"><h2>第三方规则订阅</h2><button id="updateRules">立即更新</button></div>
+    <div class="hint">每行一个 HTTP/HTTPS 地址，支持 hosts、dnsmasq、AdGuard/ABP 域名规则。失败时保留旧规则。</div>
+    <textarea id="subscriptions" spellcheck="false" placeholder="https://.../anti-ad-domains.txt"></textarea>
+    <div class="actions"><button class="primary" id="saveSubs">保存订阅</button><button id="reloadSubs">重新读取</button></div>
+  </div>
+  <div class="card">
+    <div class="section-title"><h2>导入本地规则</h2></div>
+    <div class="hint">可粘贴或选择文本文件，追加进黑/白名单后重新编译。</div>
+    <div class="tabs"><span class="tab on" data-type="block">黑名单</span><span class="tab" data-type="allow">白名单</span></div>
+    <input type="file" id="ruleFile" accept=".txt,.list,text/plain" style="display:none">
+    <textarea id="customRules" spellcheck="false" style="min-height:150px" placeholder="||ads.example.com^"></textarea>
+    <div class="actions"><button id="pickFile">选择文件</button><button class="primary" id="appendRules">追加导入</button><button id="saveRules">覆盖保存</button></div>
+  </div>
+</section>
+
+<section class="grid" style="grid-template-columns:.7fr 1.3fr">
+  <div class="card">
+    <div class="section-title"><h2>域名命中测试</h2></div>
+    <input type="text" id="testDomain" placeholder="pagead2.googlesyndication.com" autocomplete="off">
+    <div class="actions"><button class="primary" id="testBtn">测试</button></div>
+    <div class="testout" id="testOut"></div>
+  </div>
+  <div class="card">
+    <div class="section-title"><h2>更新日志</h2><button id="refreshLog">刷新</button></div>
+    <pre id="log">尚未读取</pre>
+  </div>
+</section>
+
+<div class="footer">NanoAd <span id="version">–</span> · 规则只在本机解析，订阅下载不执行任何脚本</div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+const CSRF="__CSRF__";
+const $=id=>document.getElementById(id);
+let currentType="block", statusData={};
+function toast(message,error=false){const t=$("toast");t.textContent=message;t.className="toast show"+(error?" err":"");clearTimeout(toast.timer);toast.timer=setTimeout(()=>t.className="toast",2600)}
+async function api(path,options={}){
+  options.headers=Object.assign({},options.headers||{});
+  if((options.method||"GET")!=="GET")options.headers["X-NanoAd-Token"]=CSRF;
+  const r=await fetch(path,Object.assign({cache:"no-store"},options));
+  const text=await r.text();
+  if(!r.ok)throw new Error(text||("HTTP "+r.status));
+  return text;
+}
+function num(n){n=Number(n||0);if(n>=1e6)return (n/1e6).toFixed(1)+"m";if(n>=1e3)return (n/1e3).toFixed(1)+"k";return String(n)}
+function bytes(n){n=Number(n||0);if(n>=1048576)return (n/1048576).toFixed(1)+" MiB";if(n>=1024)return (n/1024).toFixed(0)+" KiB";return n+" B"}
+function ago(ts){if(!ts)return "未更新";const s=Math.max(0,Math.floor(Date.now()/1000-ts));if(s<3600)return Math.floor(s/60)+" 分钟前";if(s<86400)return Math.floor(s/3600)+" 小时前";return Math.floor(s/86400)+" 天前"}
+async function loadStatus(){
+  try{
+    const s=statusData=JSON.parse(await api("/api/status"));
+    const blockRate=s.dns_total?((s.dns_blocked*100/s.dns_total).toFixed(1)+"%"):"0%";
+    $("dnsTotal").textContent=num(s.dns_total);$("dnsRate").textContent="阻塞率 "+blockRate;
+    $("dnsBlocked").textContent=num(s.dns_blocked);$("dnsLast").textContent=s.dns_last?("最近 "+s.dns_last):"最近命中 –";
+    $("sniBlocked").textContent=num(s.sni_blocked);$("sniInfo").textContent="连接 "+num(s.sni_total)+" / 放行 "+num(s.sni_allowed);
+    $("rules").textContent=num(s.rules);$("rss").textContent="常驻 "+bytes((s.rss_kb||0)*1024);
+    $("ruleInfo").textContent="规则 "+(s.rules||0)+" 条 · "+bytes(s.rule_bytes)+" · "+ago(s.updated_at);
+    $("filterEnabled").checked=s.filter_enabled!==0;
+    $("dnsEnabled").checked=!!s.dns_enabled;$("sniEnabled").checked=!!s.sni_enabled;$("blockQuic").checked=!!s.sni_block_quic;
+    syncFilterUi();
+    if(document.activeElement!==$("upstreams"))$("upstreams").value=s.dns_upstreams||"";
+    $("response").value=s.dns_response||"nxdomain";
+    $("state").textContent=s.filter_enabled===0?"广告过滤已停用":s.dns_running?"DNS 防护运行中":s.dns_enabled?"DNS 未运行（查看日志）":"服务已停止";$("dot").style.background=s.dns_running?"var(--accent)":"var(--warn)";
+    $("version").textContent=s.version||"";
+  }catch(e){$("state").textContent="连接失败";$("dot").style.background="var(--danger)"}
+}
+async function loadFile(type,target){
+  try{$(target).value=await api("/api/file?type="+encodeURIComponent(type))}catch(e){toast(e.message,true)}
+}
+async function loadAccount(){
+  try{const a=JSON.parse(await api("/api/account"));$("webUser").value=a.user||"admin"}catch(e){}
+}
+async function saveAccount(){
+  const user=$("webUser").value.trim(),pass=$("webPass").value,confirm=$("webPass2").value;
+  if(!user)return toast("用户名不能为空",true);
+  if(pass.length<4)return toast("密码至少 4 位",true);
+  if(pass!==confirm)return toast("两次输入的密码不一致",true);
+  try{
+    const body=new URLSearchParams({username:user,password:pass,confirm:confirm});
+    await api("/api/account",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body});
+    toast("账号已修改，正在用新账号重新登录…");
+    $("webPass").value="";$("webPass2").value="";
+    setTimeout(()=>location.reload(),800)
+  }catch(e){toast(e.message,true)}
+}
+function syncFilterUi(){
+  const on=$("filterEnabled").checked;
+  ["dnsEnabled","sniEnabled","blockQuic"].forEach(id=>$(id).disabled=!on);
+}
+async function saveSettings(){
+  const body=new URLSearchParams({filter_enabled:$("filterEnabled").checked?"1":"0",dns_enabled:$("dnsEnabled").checked?"1":"0",sni_enabled:$("sniEnabled").checked?"1":"0",sni_block_quic:$("blockQuic").checked?"1":"0",dns_response:$("response").value,dns_upstreams:$("upstreams").value.trim()});
+  try{await api("/api/settings",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body});toast("已保存，服务将在 1 秒后重启");setTimeout(loadStatus,4000);setTimeout(loadStatus,8000)}catch(e){toast(e.message,true)}
+}
+async function saveRules(append=false){
+  if(!currentType)return;
+  let text=$("customRules").value;
+  if(append&&!text.trim())return toast("没有可追加的规则",true);
+  try{await api("/api/custom?type="+currentType+(append?"&append=1":""),{method:"POST",headers:{"Content-Type":"text/plain"},body:text});toast(append?"已追加，请点击立即更新生效":"已保存，请点击立即更新生效");await loadFile(currentType,"customRules")}catch(e){toast(e.message,true)}
+}
+$("saveSettings").onclick=saveSettings;
+$("filterEnabled").onchange=syncFilterUi;
+$("saveAccount").onclick=saveAccount;
+$("restart").onclick=async()=>{try{await api("/api/restart",{method:"POST"});toast("服务重启中");setTimeout(loadStatus,2500)}catch(e){toast(e.message,true)}};
+$("updateRules").onclick=async()=>{const b=$("updateRules");b.disabled=true;b.textContent="更新中…";try{await api("/api/update",{method:"POST"});toast("后台更新已开始");let n=0;const timer=setInterval(async()=>{n++;await loadStatus();$("refreshLog").click();if(n>12){clearInterval(timer);b.disabled=false;b.textContent="立即更新"}},2000)}catch(e){b.disabled=false;b.textContent="立即更新";toast(e.message,true)}};
+$("saveSubs").onclick=async()=>{try{await api("/api/subscriptions",{method:"POST",headers:{"Content-Type":"text/plain"},body:$("subscriptions").value});toast("订阅已保存，点击立即更新下载")}catch(e){toast(e.message,true)}};
+$("reloadSubs").onclick=()=>loadFile("subscriptions","subscriptions");
+document.querySelectorAll(".tab").forEach(tab=>tab.onclick=()=>{document.querySelectorAll(".tab").forEach(t=>t.classList.remove("on"));tab.classList.add("on");currentType=tab.dataset.type;$("customRules").placeholder=currentType==="block"?"||ads.example.com^":"@@||login.example.com^";loadFile(currentType,"customRules")});
+$("pickFile").onclick=()=>$("ruleFile").click();
+$("ruleFile").onchange=async()=>{const f=$("ruleFile").files[0];if(!f)return;if(f.size>262144)return toast("文件超过 256 KiB",true);$("customRules").value=await f.text();toast("已载入 "+f.name+"，选择追加或覆盖")};
+$("appendRules").onclick=()=>saveRules(true);$("saveRules").onclick=()=>saveRules(false);
+$("testBtn").onclick=async()=>{const d=$("testDomain").value.trim();if(!d)return;try{const r=JSON.parse(await api("/api/check?domain="+encodeURIComponent(d)));const label=r.result===1?"<strong style='color:var(--danger)'>已拦截（黑名单）</strong>":r.result===-1?"<strong style='color:var(--accent)'>白名单放行</strong>":"<span style='color:var(--muted)'>未命中，正常放行</span>";$("testOut").innerHTML=label+" <span class='mono'>"+r.domain.replace(/[<>&]/g,"")+"</span>"}catch(e){$("testOut").textContent=e.message}};
+$("testDomain").onkeydown=e=>{if(e.key==="Enter")$("testBtn").click()};
+$("refreshLog").onclick=async()=>{try{$("log").textContent=await api("/api/log")||"暂无更新日志"}catch(e){$("log").textContent=e.message}};
+$("subscriptions").addEventListener("input",()=>{});
+Promise.all([loadStatus(),loadAccount(),loadFile("subscriptions","subscriptions"),loadFile("block","customRules")]).then(()=>$("refreshLog").click());
+setInterval(loadStatus,6000);
+</script>
+</body>
+</html>

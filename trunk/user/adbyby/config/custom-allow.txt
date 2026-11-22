@@ -1,0 +1,2 @@
+# Custom allow rules. A matching allow rule takes priority over all block rules.
+# Example: @@||login.example.com^

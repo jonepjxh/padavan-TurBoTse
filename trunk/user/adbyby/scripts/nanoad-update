@@ -1,0 +1,148 @@
+#!/bin/sh
+# Download, validate, compile and atomically activate NanoAd rules.
+umask 077
+BASE=$(CDPATH= cd "$(dirname "$0")" && pwd)
+TMP=/tmp/nanoad
+WORK=$TMP/update.$$
+LOG=$TMP/update.log
+mkdir -p "$TMP" 2>/dev/null || exit 1
+LOCK=$TMP/update.lock
+acquired=0
+attempt=0
+while [ "$attempt" -lt 3 ]; do
+    if mkdir "$LOCK" 2>/dev/null; then
+        echo $$ >"$LOCK/pid"
+        acquired=1
+        break
+    fi
+    sleep 1
+    pid=$(cat "$LOCK/pid" 2>/dev/null)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        echo "$(date '+%F %T') another update is already running" >>"$LOG"
+        exit 0
+    fi
+    rm -rf "$LOCK" 2>/dev/null || true
+    attempt=$((attempt + 1))
+done
+if [ "$acquired" != "1" ]; then
+    echo "$(date '+%F %T') cannot acquire update lock" >>"$LOG"
+    exit 1
+fi
+trap 'rm -rf "$WORK" "$LOCK"' EXIT INT TERM
+mkdir -p "$WORK" || exit 1
+: >"$WORK/empty.txt"
+[ -f "$BASE/custom-block.txt" ] || cp "$WORK/empty.txt" "$BASE/custom-block.txt"
+[ -f "$BASE/custom-allow.txt" ] || cp "$WORK/empty.txt" "$BASE/custom-allow.txt"
+
+config_get() {
+    grep -m1 "^$1=" "$BASE/nanoad.conf" 2>/dev/null | cut -d= -f2-
+}
+INSECURE=$(config_get download_insecure)
+
+fetch() {
+    url=$1
+    destination=$2
+    CURL_IFACE=
+    for n in 0 1 2 3; do
+        if [ -e "/sys/class/net/ppp$n" ]; then CURL_IFACE="--interface ppp$n"; break; fi
+    done
+    if which curl >/dev/null 2>&1; then
+        if [ "$INSECURE" = "1" ]; then
+            curl $CURL_IFACE -k -fL --retry 2 --retry-delay 2 --connect-timeout 20 --max-time 120 --max-filesize 4194304 -o "$destination" "$url"
+        else
+            curl $CURL_IFACE -fL --retry 2 --retry-delay 2 --connect-timeout 20 --max-time 120 --max-filesize 4194304 -o "$destination" "$url"
+        fi
+    elif which wget >/dev/null 2>&1; then
+        if [ "$INSECURE" = "1" ]; then
+            wget --no-check-certificate -T 15 -t 3 -q -O "$destination" "$url"
+        else
+            wget -T 15 -t 3 -q -O "$destination" "$url"
+        fi
+    else
+        return 127
+    fi
+}
+
+set --
+index=0
+attempted=0
+succeeded=0
+failed=0
+total_bytes=0
+while IFS= read -r url || [ -n "$url" ]; do
+    url=$(echo "$url" | tr -d '\r')
+    case "$url" in ''|\#*) continue ;; esac
+    case "$url" in http://*|https://*) ;; *) echo "ignored invalid URL: $url" >>"$LOG"; failed=1; continue ;; esac
+    attempted=$((attempted + 1))
+    index=$((index + 1))
+    destination=$WORK/source-$index.txt
+    if fetch "$url" "$destination" && [ -s "$destination" ]; then
+        bytes=$(wc -c <"$destination")
+        total_bytes=$((total_bytes + bytes))
+        if [ "$total_bytes" -gt 12582912 ]; then
+            echo "$(date '+%F %T') update aborted: combined sources exceed 12 MiB" >>"$LOG"
+            failed=1
+            break
+        fi
+        set -- "$@" "$destination"
+        succeeded=$((succeeded + 1))
+        echo "$(date '+%F %T') downloaded $url ($bytes bytes)" >>"$LOG"
+    else
+        echo "$(date '+%F %T') download failed: $url" >>"$LOG"
+        failed=1
+    fi
+done <"$BASE/subscriptions.txt"
+
+if [ -s "$TMP/rules.bin" ] && [ "$(wc -c <"$TMP/rules.bin" 2>/dev/null || echo 0)" -lt 1024 ]; then
+    rm -f "$TMP/rules.bin"
+fi
+if [ "$failed" -ne 0 ] && [ -s "$TMP/rules.bin" ]; then
+    echo "$(date '+%F %T') update aborted; previous rules retained" >>"$LOG"
+    exit 1
+fi
+FALLBACK=0
+if [ "$attempted" -gt 0 ] && [ "$succeeded" -eq 0 ] && [ ! -s "$TMP/rules.bin" ]; then
+    if [ -s "$BASE/rules.compact.txt.gz" ] && gzip -dc "$BASE/rules.compact.txt.gz" >"$WORK/fallback.txt" 2>/dev/null && [ -s "$WORK/fallback.txt" ]; then
+        set -- "$@" "$WORK/fallback.txt"
+        FALLBACK=1
+        echo "$(date '+%F %T') no subscription downloaded; using bundled compact rules" >>"$LOG"
+    else
+        echo "$(date '+%F %T') no subscription downloaded; installing custom rules only" >>"$LOG"
+    fi
+fi
+set -- "$@" "$BASE/custom-block.txt"
+if ! "$BASE/nanoad" compile -o "$WORK/rules.bin" --allow "$BASE/custom-allow.txt" "$@" >"$WORK/compile.log" 2>&1; then
+    cat "$WORK/compile.log" >>"$LOG"
+    echo "$(date '+%F %T') compile failed; previous rules retained" >>"$LOG"
+    exit 1
+fi
+if ! "$BASE/nanoad" match -r "$WORK/rules.bin" example.invalid >/dev/null 2>&1; then
+    echo "$(date '+%F %T') compiled rules failed validation" >>"$LOG"
+    exit 1
+fi
+cat "$WORK/compile.log" >>"$LOG"
+mv "$WORK/rules.bin" "$TMP/rules.bin"
+chmod 0600 "$TMP/rules.bin"
+# K2P storage flash is only 512 KB. Persist a compact, evenly sampled subset
+# (about 30k domains) so blocking survives reboot; the full set stays in RAM.
+: >"$WORK/domains.txt"
+for source in "$@"; do
+    grep -v '^#' "$source" 2>/dev/null | grep -v '^[[:space:]]*$' >>"$WORK/domains.txt" || true
+done
+if [ "$FALLBACK" = "0" ] && [ -s "$WORK/domains.txt" ] && {
+    grep -Ei 'doubleclick|googlesyndication|googleads|googletagmanager|google-analytics|hm.baidu|pos.baidu|cpro.baidu|tanx|alimama|adservice|adsystem|adnxs|adsrvr|adform|adroll|adsafeprotected|moatads|scorecardresearch|outbrain|taboola|criteo|smartadserver|teads|rubicon|openx|pubmatic|appnexus|amazon-adsystem|ads-twitter|analytics|tracking|tracker|telemetry|adcolony|applovin|unityads|vungle|chartboost|ironsource|mopub|inmobi|startapp|tapjoy|smaato|advertising|adserver|adtech|adnetwork|pagead|adview|admaster|adchina|allyes|beacon|hotjar|mixpanel|optimizely|affiliate|impression|banner|sponsor|adx' "$WORK/domains.txt" 2>/dev/null || true
+    awk 'NR % 5 < 2' "$WORK/domains.txt"
+} | awk '!seen[$0]++' | head -n 30000 | gzip -9 >"$BASE/rules.compact.txt.gz.tmp" 2>/dev/null; then
+    mv -f "$BASE/rules.compact.txt.gz.tmp" "$BASE/rules.compact.txt.gz"
+    chmod 0600 "$BASE/rules.compact.txt.gz" 2>/dev/null || true
+    rm -f "$BASE/rules.bin.gz" 2>/dev/null || true
+    which mtd_storage.sh >/dev/null 2>&1 && mtd_storage.sh save >/dev/null 2>&1 || true
+fi
+for service in dns sni web; do
+    if [ -r "$TMP/$service.pid" ]; then
+        pid=$(cat "$TMP/$service.pid")
+        kill -HUP "$pid" 2>/dev/null || true
+    fi
+done
+echo "$(date '+%F %T') update complete; rules activated atomically" >>"$LOG"
+exit 0

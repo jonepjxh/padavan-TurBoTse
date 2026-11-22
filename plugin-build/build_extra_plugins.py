@@ -15,7 +15,7 @@ import os, sys, json, hashlib, tarfile, shutil, subprocess
 SRC = os.getcwd()
 REPO = os.path.join(SRC, 'plugin-repo')
 os.makedirs(REPO, exist_ok=True)
-PATCH = os.environ.get('PLUGIN_PATCH_DIR', os.path.join(SRC, '..', 'plugin_patch'))
+PATCH = os.environ.get('PLUGIN_PATCH_DIR', os.path.join(SRC, 'plugin_patch'))
 NA_SRC = os.environ.get('NANOAD_SRC_DIR', os.path.join(SRC, 'nanoad-src'))
 CC = os.environ.get('CROSS_CC', os.path.join(SRC, 'toolchain', 'mipsel-linux-musl', 'bin', 'mipsel-linux-musl-gcc'))
 STRIP = os.environ.get('CROSS_STRIP', os.path.join(SRC, 'toolchain', 'mipsel-linux-musl', 'bin', 'mipsel-linux-musl-strip'))
@@ -86,7 +86,9 @@ def make_nanoad():
         else:
             errors.append('nanoad patch script missing: ' + s)
     for s in ('nanoad', 'nanoad-ctl', 'nanoad-update', 'install.sh', 'start.sh', 'stop.sh'):
-        os.chmod(os.path.join(tmpd, s), 0o755)
+        fp = os.path.join(tmpd, s)
+        if os.path.isfile(fp):
+            os.chmod(fp, 0o755)
     # manifest
     files = []
     for dp, _, fs in os.walk(tmpd):
@@ -133,7 +135,9 @@ def make_adbyby():
         else:
             errors.append('adbyby patch script missing: ' + s)
     for s in ('install.sh', 'start.sh', 'stop.sh', 'adbyby.sh'):
-        os.chmod(os.path.join(tmpd, s), 0o755)
+        fp = os.path.join(tmpd, s)
+        if os.path.isfile(fp):
+            os.chmod(fp, 0o755)
     files = []
     for dp, _, fs in os.walk(tmpd):
         for f in fs:

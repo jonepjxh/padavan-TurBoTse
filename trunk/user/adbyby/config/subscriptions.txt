@@ -1,0 +1,8 @@
+# One HTTP/HTTPS rule subscription per line. On a 128 MB K2P keep final domains below about 120k.
+# Official anti-AD CDN (reachable from mainland China; tested on 2026-11-22).
+https://anti-ad.net/anti-ad-for-dnsmasq.conf
+# Optional additional sources (remove the leading # only when needed).
+# Some networks cannot reach GitHub; a failed source keeps the previous rules.
+# https://raw.githubusercontent.com/privacy-protection-tools/anti-AD/master/anti-ad-domains.txt
+# https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt
+# https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts

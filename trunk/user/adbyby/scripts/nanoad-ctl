@@ -1,0 +1,319 @@
+#!/bin/sh
+# NanoAd service controller for Padavan 4.4 (POSIX sh / BusyBox).
+umask 077
+BASE=$(CDPATH= cd "$(dirname "$0")" && pwd)
+TMP=/tmp/nanoad
+CONFIG=$BASE/nanoad.conf
+PIDFILE=$TMP/ctl.pid
+
+config_get() {
+    grep -m1 "^$1=" "$CONFIG" 2>/dev/null | cut -d= -f2-
+}
+is_on() { [ "$(config_get "$1")" = "1" ]; }
+filter_is_on() { [ "$(config_get filter_enabled)" != "0" ]; }
+
+ensure_dirs() {
+    mkdir -p "$TMP" "$BASE/web"
+}
+
+pid_of() {
+    [ -r "$TMP/$1.pid" ] && cat "$TMP/$1.pid" 2>/dev/null
+}
+
+stop_one() {
+    service=$1
+    pid=$(pid_of "$service")
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        kill -TERM "$pid" 2>/dev/null
+    fi
+    # A stale/overwritten pidfile must not leave an old DNS process on port 5353.
+    for p in $(ps 2>/dev/null | grep "nanoad $service" | grep -v grep | awk '{print $1}'); do
+        kill -TERM "$p" 2>/dev/null || true
+    done
+    count=0
+    while [ "$count" -lt 3 ]; do
+        alive=0
+        [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && alive=1
+        for p in $(ps 2>/dev/null | grep "nanoad $service" | grep -v grep | awk '{print $1}'); do
+            kill -0 "$p" 2>/dev/null && alive=1
+        done
+        [ "$alive" = "0" ] && break
+        sleep 1
+        count=$((count + 1))
+    done
+    [ -n "$pid" ] && kill -KILL "$pid" 2>/dev/null || true
+    for p in $(ps 2>/dev/null | grep "nanoad $service" | grep -v grep | awk '{print $1}'); do
+        kill -KILL "$p" 2>/dev/null || true
+    done
+    rm -f "$TMP/$service.pid"
+}
+
+service_start() {
+    service=$1
+    flag=$2
+    [ "$flag" = "1" ] || return 0
+    if [ -n "$(pid_of "$service")" ] && kill -0 "$(pid_of "$service")" 2>/dev/null; then
+        return 0
+    fi
+    RUNBIN=$BASE/nanoad
+    mkdir -p "$TMP/bin" 2>/dev/null || true
+    if cp -f "$BASE/nanoad" "$TMP/bin/nanoad" 2>/dev/null; then
+        chmod 0755 "$TMP/bin/nanoad"
+        RUNBIN=$TMP/bin/nanoad
+    fi
+    "$RUNBIN" "$service" -c "$CONFIG" >/dev/null 2>&1
+    sleep 1
+    pid=$(pid_of "$service")
+    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+        logger -t nanoad "failed to start $service" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+
+firewall_remove() {
+    if which iptables >/dev/null 2>&1; then
+        while iptables -t nat -D PREROUTING -i br0 -p tcp --dport 443 -j NANOAD_HTTPS 2>/dev/null; do :; done
+        iptables -t nat -F NANOAD_HTTPS 2>/dev/null || true
+        iptables -t nat -X NANOAD_HTTPS 2>/dev/null || true
+        while iptables -D FORWARD -i br0 -p udp --dport 443 -j DROP 2>/dev/null; do :; done
+        web_port=$(config_get web_port)
+        while iptables -D INPUT -j NANOAD_WEB 2>/dev/null; do :; done
+        iptables -F NANOAD_WEB 2>/dev/null || true
+        iptables -X NANOAD_WEB 2>/dev/null || true
+        while iptables -D INPUT ! -i br0 -p tcp --dport "${web_port:-18080}" -j DROP 2>/dev/null; do :; done
+    fi
+}
+
+firewall_add() {
+    which iptables >/dev/null 2>&1 || return 0
+    firewall_remove
+    web_port=$(config_get web_port)
+    if iptables -N NANOAD_WEB 2>/dev/null; then
+        iptables -A NANOAD_WEB -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN 2>/dev/null || true
+        iptables -A NANOAD_WEB -i br0 -j RETURN 2>/dev/null || true
+        iptables -A NANOAD_WEB -i lo -j RETURN 2>/dev/null || true
+        if filter_is_on && is_on sni_enabled; then
+            sni_port=$(config_get sni_port)
+            iptables -A NANOAD_WEB -p tcp --dport "${sni_port:-18443}" -j DROP 2>/dev/null || true
+        fi
+        iptables -A NANOAD_WEB -p tcp --dport "${web_port:-18080}" -j DROP 2>/dev/null || true
+        iptables -I INPUT -j NANOAD_WEB 2>/dev/null || true
+    fi
+    if filter_is_on && is_on sni_enabled; then
+        iptables -t nat -N NANOAD_HTTPS 2>/dev/null || true
+        router_ip=$(nvram get lan_ipaddr 2>/dev/null)
+        if [ -n "$router_ip" ]; then
+            iptables -t nat -A NANOAD_HTTPS -d "$router_ip" -j RETURN 2>/dev/null || true
+        fi
+        sni_port=$(config_get sni_port)
+        iptables -t nat -A NANOAD_HTTPS -p tcp --dport 443 -j REDIRECT --to-ports "${sni_port:-18443}" 2>/dev/null || true
+        iptables -t nat -I PREROUTING -i br0 -p tcp --dport 443 -j NANOAD_HTTPS 2>/dev/null || true
+        if is_on sni_block_quic; then
+            iptables -I FORWARD -i br0 -p udp --dport 443 -j DROP 2>/dev/null || true
+        fi
+    fi
+}
+
+dnsmasq_runtime_mode() {
+    # Padavan regenerates /etc/dnsmasq.conf from its own template on every
+    # restart_dhcpd, so no-resolv must be applied to the live file afterwards.
+    if grep -q '^server=127.0.0.1#' /tmp/dnsmasq.servers 2>/dev/null; then
+        grep -q '^no-resolv$' /etc/dnsmasq.conf 2>/dev/null || echo no-resolv >>/etc/dnsmasq.conf
+    else
+        sed -i '/^no-resolv$/d' /etc/dnsmasq.conf 2>/dev/null || true
+    fi
+    killall -HUP dnsmasq 2>/dev/null || true
+}
+
+dnsmasq_disable() {
+    SERVERS=/etc/storage/dnsmasq/dnsmasq.servers
+    CONF=/etc/storage/dnsmasq/dnsmasq.conf
+    if [ -f "$SERVERS.pre-nanoad" ]; then
+        cp "$SERVERS.pre-nanoad" "$SERVERS"
+        rm -f "$SERVERS.pre-nanoad"
+    elif [ -f "$SERVERS.pre-nanoad.missing" ]; then
+        rm -f "$SERVERS" "$SERVERS.pre-nanoad.missing"
+    fi
+    if [ -f "$CONF" ]; then
+        awk '
+            /^# BEGIN NANOAD$/ {skip=1; next}
+            /^# END NANOAD$/ {skip=0; next}
+            !skip {print}
+        ' "$CONF" >"$CONF.nanoad.tmp" && mv "$CONF.nanoad.tmp" "$CONF"
+    fi
+    restart_dnsmasq
+    dnsmasq_runtime_mode
+}
+
+dnsmasq_enable() {
+    [ "$(config_get dns_enabled)" = "1" ] || return 0
+    DIR=/etc/storage/dnsmasq
+    SERVERS=$DIR/dnsmasq.servers
+    CONF=$DIR/dnsmasq.conf
+    mkdir -p "$DIR" 2>/dev/null || return 0
+    if [ ! -f "$SERVERS.pre-nanoad" ]; then
+        if [ -f "$SERVERS" ]; then cp "$SERVERS" "$SERVERS.pre-nanoad"; else : >"$SERVERS.pre-nanoad.missing"; fi
+    fi
+    dns_port=$(config_get dns_port)
+    {
+        echo "# Managed by NanoAd; the original file was backed up as dnsmasq.servers.pre-nanoad"
+        echo "server=127.0.0.1#${dns_port:-5353}"
+    } >"$SERVERS"
+    touch "$CONF" 2>/dev/null
+    awk '
+        /^# BEGIN NANOAD$/ {skip=1; next}
+        /^# END NANOAD$/ {skip=0; next}
+        !skip {print}
+    ' "$CONF" >"$CONF.nanoad.tmp"
+    {
+        echo "# BEGIN NANOAD"
+        echo "no-resolv"
+        echo "# END NANOAD"
+    } >>"$CONF.nanoad.tmp"
+    mv "$CONF.nanoad.tmp" "$CONF"
+    restart_dnsmasq
+    # restart_dhcpd copies the storage servers file to /tmp, but its generated
+    # /etc/dnsmasq.conf has no no-resolv; force NanoAd to be the only upstream.
+    dns_port=$(config_get dns_port)
+    {
+        echo "# Managed by NanoAd; the original file was backed up as dnsmasq.servers.pre-nanoad"
+        echo "server=127.0.0.1#${dns_port:-5353}"
+    } >/tmp/dnsmasq.servers
+    grep -q '^no-resolv$' /etc/dnsmasq.conf 2>/dev/null || echo no-resolv >>/etc/dnsmasq.conf
+    killall -HUP dnsmasq 2>/dev/null || true
+}
+
+restart_dnsmasq() {
+    if which restart_dhcpd >/dev/null 2>&1; then
+        restart_dhcpd >/dev/null 2>&1 || true
+    else
+        killall -HUP dnsmasq 2>/dev/null || true
+    fi
+}
+
+dnsmasq_touched() {
+    [ -f /etc/storage/dnsmasq/dnsmasq.servers.pre-nanoad ] ||
+    [ -f /etc/storage/dnsmasq/dnsmasq.servers.pre-nanoad.missing ] ||
+    grep -q '^# BEGIN NANOAD$' /etc/storage/dnsmasq/dnsmasq.conf 2>/dev/null
+}
+
+cron_update() {
+    which cru >/dev/null 2>&1 || return 0
+    cru d nanoad-update 2>/dev/null || true
+    if is_on auto_update; then
+        cru a nanoad-update "23 4 * * * $BASE/nanoad-update" >/dev/null 2>&1 || true
+    fi
+}
+
+start_services() {
+    cd "$BASE" || exit 1
+    ensure_dirs
+    need_update=0
+    if ! filter_is_on; then
+        stop_one dns
+        stop_one sni
+        need_update=0
+    fi
+    # A compiled rule file smaller than 1 KiB is effectively empty (the header
+    # alone is about 48 bytes). Treat it as missing so bundled rules are used.
+    if [ -s "$TMP/rules.bin" ] && [ "$(wc -c <"$TMP/rules.bin" 2>/dev/null || echo 0)" -lt 1024 ]; then
+        rm -f "$TMP/rules.bin"
+    fi
+    if [ ! -s "$TMP/rules.bin" ] && [ -s "$BASE/rules.compact.txt.gz" ]; then
+        gzip -dc "$BASE/rules.compact.txt.gz" >"$TMP/rules.compact.txt" 2>/dev/null || true
+        [ -s "$TMP/rules.compact.txt" ] &&
+            "$BASE/nanoad" compile -o "$TMP/rules.bin" "$TMP/rules.compact.txt" >/dev/null 2>&1 || true
+        rm -f "$TMP/rules.compact.txt"
+        chmod 0600 "$TMP/rules.bin" 2>/dev/null || true
+    fi
+    if [ ! -s "$TMP/rules.bin" ] && [ -s "$BASE/rules.bin.gz" ]; then
+        gzip -dc "$BASE/rules.bin.gz" >"$TMP/rules.bin" 2>/dev/null || true
+        chmod 0600 "$TMP/rules.bin" 2>/dev/null || true
+    fi
+    if [ ! -s "$TMP/rules.bin" ]; then
+        logger -t nanoad "no rules available; starting fail-open and updating in background" 2>/dev/null || true
+        : >"$TMP/empty.txt"
+        if ! "$BASE/nanoad" compile -o "$TMP/rules.bin" "$TMP/empty.txt" >/dev/null 2>&1; then
+            logger -t nanoad "cannot create empty rule file; start aborted" 2>/dev/null || true
+            echo "cannot create empty rule file" >&2
+            return 1
+        fi
+        chmod 0600 "$TMP/rules.bin"
+        need_update=1
+    fi
+    rm -f "$TMP/stats.bin"
+    service_start dns 0
+    if filter_is_on && is_on dns_enabled; then
+        if service_start dns 1; then
+            dnsmasq_enable
+        else
+            logger -t nanoad "DNS failed to start; restoring dnsmasq" 2>/dev/null || true
+            dnsmasq_disable
+        fi
+    elif dnsmasq_touched; then
+        dnsmasq_disable
+    fi
+    if filter_is_on; then
+        service_start sni "$(config_get sni_enabled)"
+    fi
+    firewall_add
+    service_start web "$(config_get web_enabled)"
+    cron_update
+    if [ "$need_update" = "1" ]; then
+        "$BASE/nanoad-update" >/dev/null 2>&1 &
+    fi
+}
+
+stop_services() {
+    stop_one web
+    stop_one sni
+    stop_one dns
+    firewall_remove
+    dnsmasq_disable
+    if which cru >/dev/null 2>&1; then cru d nanoad-update 2>/dev/null || true; fi
+}
+
+persist_storage() {
+    which mtd_storage.sh >/dev/null 2>&1 && mtd_storage.sh save >/dev/null 2>&1 || true
+}
+
+case "${1:-}" in
+    start)
+        start_services
+        persist_storage
+        ;;
+    boot)
+        start_services
+        ;;
+    stop)
+        stop_services
+        persist_storage
+        ;;
+    restart)
+        stop_services
+        start_services
+        persist_storage
+        ;;
+    firewall)
+        firewall_add
+        ;;
+    update)
+        "$BASE/nanoad-update"
+        ;;
+    status)
+        for service in dns sni web; do
+            pid=$(pid_of "$service")
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                echo "$service: running (pid $pid)"
+            else
+                echo "$service: stopped"
+            fi
+        done
+        [ -s "$TMP/rules.bin" ] && echo "rules: $(wc -c <"$TMP/rules.bin") bytes" || echo "rules: missing"
+        ;;
+    *)
+        echo "Usage: $0 {start|boot|stop|restart|update|firewall|status}" >&2
+        exit 2
+        ;;
+esac

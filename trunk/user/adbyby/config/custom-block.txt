@@ -1,0 +1,2 @@
+# Custom block rules: plain domains, hosts, dnsmasq address rules, or ||domain^
+# Example: ||ads.example.com^

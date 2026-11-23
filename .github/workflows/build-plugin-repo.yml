@@ -30,7 +30,8 @@ jobs:
           sudo apt-get install -y \
             bison flex gperf help2man libtool-bin texinfo python3-docutils \
             autopoint gettext ccache autoconf automake liblzma-dev \
-            libltdl-dev liblzo2-dev curl xz-utils build-essential jq fakeroot
+            libltdl-dev liblzo2-dev curl xz-utils build-essential jq fakeroot \
+            cmake nodejs npm unzip zlib1g-dev libssl-dev
 
       - name: Download upstream source
         run: |
@@ -72,25 +73,62 @@ jobs:
         working-directory: src
         run: |
           CFG=trunk/configs/templates/K2P.config
-          # Plugins that compile cleanly as standalone pieces; exclude ones needing
-          # kernel modules, extra partitions or conflicting WebUI slots.
+          # Pure-userspace plugins only (no kernel-module-dependent ones).
+          # These compile as standalone binaries and can run when installed
+          # on the lite firmware via the plugin center.
           for m in \
             HTOP NANO IPERF3 TTYD SOCAT MTR LRZSZ TCPDUMP CURL \
             SHADOWSOCKS XRAY V2RAY TROJAN SSOBFS \
-            REDSOCKS \
-            SMARTDNS ALIDDNS DDNSTO \
-            FRPC FRPS FTPD \
+            REDSOCKS MICROSOCKS SRELAY 3PROXY \
+            SMARTDNS ALIDDNS DDNSTO DNSFORWARDER ADGUARDHOME \
+            FRPC FRPS \
             MSD_LITE VLMCSD MENTOHUST U2EC \
-            SCUTCLIENT DOGCOM GDUT_DRCOM MINIEAP NJIT_CLIENT SRELAY; do
+            SCUTCLIENT DOGCOM GDUT_DRCOM MINIEAP NJIT_CLIENT \
+            XUPNPD ALDRIVER; do
             echo "CONFIG_FIRMWARE_INCLUDE_${m}=y" >> "$CFG"
           done
           echo "CONFIG_FIRMWARE_INCLUDE_ADBYBY=y" >> "$CFG"
+          # sing-box / naiveproxy / resolveip hang off SHADOWSOCKS=y
+          echo "CONFIG_FIRMWARE_INCLUDE_SINGBOX=y" >> "$CFG"
+          echo "CONFIG_FIRMWARE_INCLUDE_NAIVEPROXY=y" >> "$CFG"
+          # wireguard-tools (wg binary). Kernel module is firmware-side only.
+          echo "CONFIG_FIRMWARE_INCLUDE_WIREGUARD=y" >> "$CFG"
+          # ZeroTier user-space daemon.
+          echo "CONFIG_FIRMWARE_INCLUDE_ZEROTIER=y" >> "$CFG"
+          # Storage-dependent download/media servers. Need USB + a filesystem
+          # so that STORAGE_ENABLED is set in trunk/user/Makefile.
+          echo "CONFIG_FIRMWARE_ENABLE_USB=y" >> "$CFG"
+          echo "CONFIG_FIRMWARE_ENABLE_EXT4=y" >> "$CFG"
+          echo "CONFIG_FIRMWARE_ENABLE_FAT=y" >> "$CFG"
+          for m in ARIA TRANSMISSION MINIDLNA FIREFLY FTPD; do
+            echo "CONFIG_FIRMWARE_INCLUDE_${m}=y" >> "$CFG"
+          done
+          echo "CONFIG_FIRMWARE_INCLUDE_ARIA_WEB_CONTROL=y" >> "$CFG"
+          echo "CONFIG_FIRMWARE_INCLUDE_TRANSMISSION_WEB_CONTROL=y" >> "$CFG"
           echo "--- enabled count ---"
           grep -c 'CONFIG_FIRMWARE_INCLUDE_.*=y' "$CFG"
 
+      - name: Fix upstream plugin Makefiles
+        working-directory: src
+        run: |
+          # ZeroTier upstream Makefile has its compile line commented out and
+          # installs the source DIR as the binary. Restore real build + path.
+          ZM=trunk/user/zerotier/Makefile
+          if [ -f "$ZM" ]; then
+            sed -i 's/^#all: download_test extract_test/all: download_test extract_test/' "$ZM"
+            sed -i 's|^#[[:space:]]*$(MAKE) -j$(HOST_NCPU) -C $(SRC_NAME)[[:space:]]*$|	$(MAKE) -j$(HOST_NCPU) -C $(SRC_NAME)|' "$ZM"
+            # Correct romfs install: source dir -> compiled binary
+            sed -i 's|$(THISDIR)/$(SRC_NAME) /usr/bin/zerotier-one|$(THISDIR)/$(SRC_NAME)/zerotier-one /usr/bin/zerotier-one|' "$ZM"
+            echo "--- zerotier Makefile all/romfs ---"
+            grep -A2 -E '^(all:|romfs:)' "$ZM"
+          fi
+
       - name: Build firmware
         working-directory: src
-        run: make K2P TOOLCHAIN=mipsel-linux-musl
+        run: |
+          # -k keeps going when an individual optional plugin fails, so one
+          # bad plugin does not prevent all the others from being packaged.
+          make -k K2P TOOLCHAIN=mipsel-linux-musl || echo "make returned nonzero (some plugins may have failed); continuing to package what was built"
 
       - name: Inspect romfs and link types
         working-directory: src
@@ -145,8 +183,8 @@ jobs:
           frp|usr/bin/frpc usr/bin/frps
           aria2|usr/bin/aria2c
           transmission|usr/bin/transmission-daemon
-          minidlna|usr/bin/minidlna
-          firefly|usr/bin/firefly
+          minidlna|usr/bin/minidlnad
+          firefly|usr/bin/mt-daapd
           xupnpd|usr/bin/xupnpd
           vsftpd|usr/sbin/vsftpd
           dump1090|usr/bin/dump1090
@@ -163,6 +201,14 @@ jobs:
           dns2tcp|usr/bin/dns2tcp
           dnsproxy|usr/bin/dnsproxy
           ipt2socks|usr/bin/ipt2socks
+          3proxy|usr/bin/3proxy
+          dnsforwarder|usr/bin/dns-forwarder
+          wireguard|usr/bin/wg
+          zerotier|usr/bin/zerotier-one
+          inadyn|usr/sbin/inadyn
+          dnsmasq|usr/sbin/dnsmasq
+          lldt|usr/bin/lld2d
+          resolveip|usr/bin/resolveip
           MAP
           python3 - <<'PY'
           import os, json, hashlib, tarfile, fnmatch
@@ -183,6 +229,13 @@ jobs:
             'dogcom':'校园网认证','gdut_drcom':'校园网认证','minieap':'校园网认证',
             'srelay':'SOCKS代理','chinadns_ng':'ChinaDNS-NG','dns2tcp':'DNS over TCP',
             'dnsproxy':'DNS代理','ipt2socks':'iptables转socks',
+            'microsocks':'MicroSocks','3proxy':'3Proxy代理',
+            'dnsforwarder':'DNS转发器','xupnpd':'XUPnPD媒体服务器',
+            'wireguard':'WireGuard工具(wg)','zerotier':'ZeroTier',
+            'aria2':'Aria2下载','transmission':'Transmission下载',
+            'minidlna':'MiniDLNA媒体服务器','firefly':'Firefly媒体服务器',
+            'inadyn':'动态域名','dnsmasq':'DNS/DHCP服务器',
+            'lldt':'LLTD网络发现','resolveip':'IP解析工具',
           }
           index = []
           for line in open('/tmp/plugin_map.txt', encoding='utf-8'):
@@ -233,6 +286,70 @@ jobs:
           PY
           ls -lh "$PKGDIR" | head -60
 
+      - name: Augment plugin packages with required helper files
+        working-directory: src
+        run: |
+          python3 - <<'PY'
+          import os, json, hashlib, tarfile, shutil
+          root=os.getcwd(); romfs=os.path.join(root,'trunk','romfs'); pkgdir=os.path.join(root,'plugin-repo')
+          # Extra files to append into specific plugin packages, copied from romfs.
+          # key: plugin name -> list of (romfs_relative_path_or_glob, dest_arcname)
+          extras = {
+            '3proxy': [('usr/lib/TransparentPlugin.ld.so','usr/lib/TransparentPlugin.ld.so')],
+            'firefly': [
+              ('usr/lib/firefly/plugins/out-daap.so','usr/lib/firefly/plugins/out-daap.so'),
+              ('usr/lib/firefly/plugins/rsp.so','usr/lib/firefly/plugins/rsp.so'),
+              ('usr/lib/firefly/plugins/ssc-ffmpeg.so','usr/lib/firefly/plugins/ssc-ffmpeg.so'),
+            ],
+          }
+          def find_one(rel):
+            p=os.path.join(romfs,rel)
+            if os.path.isfile(p): return p
+            base=os.path.basename(rel)
+            for dp,_,fs in os.walk(romfs):
+              for f in fs:
+                if f==base: return os.path.join(dp,f)
+            return None
+          def sha(p): return hashlib.sha256(open(p,'rb').read()).hexdigest()
+          # Load index
+          jf=os.path.join(pkgdir,'plugins.json')
+          data=json.load(open(jf,encoding='utf-8')) if os.path.isfile(jf) else {'plugins':[]}
+          byname={p['name']:p for p in data['plugins']}
+          tf_by_name={p['name']:p['file'] for p in data['plugins']}
+          for name,items in extras.items():
+            tarpath=os.path.join(pkgdir, tf_by_name.get(name,name+'.tar.gz'))
+            if not os.path.isfile(tarpath):
+              print('AUGMENT SKIP (no package):',name); continue
+            tmpd=os.path.join('/tmp','aug_'+name)
+            if os.path.isdir(tmpd): shutil.rmtree(tmpd)
+            os.makedirs(tmpd,exist_ok=True)
+            with tarfile.open(tarpath,'r:gz') as tf: tf.extractall(tmpd)
+            added=0
+            for rel,arc in items:
+              src=find_one(rel)
+              if not src:
+                print('  missing extra:',name,rel); continue
+              dst=os.path.join(tmpd,arc); os.makedirs(os.path.dirname(dst),exist_ok=True)
+              shutil.copy2(src,dst); added+=1
+            if added:
+              with tarfile.open(tarpath,'w:gz') as tf:
+                for dp,_,fs in os.walk(tmpd):
+                  for f in fs:
+                    full=os.path.join(dp,f); tf.add(full,os.path.relpath(full,tmpd))
+              # refresh index entry size/sha/files
+              e=byname.get(name)
+              if e:
+                e['size']=os.path.getsize(tarpath); e['sha256']=sha(tarpath)
+                e['files']=[m.name for m in tarfile.open(tarpath,'r:gz').getmembers() if m.isfile() and m.name!='manifest.json']
+              print('AUGMENTED',name,'with',added,'files')
+          # rewrite indexes from current data
+          with open(jf,'w',encoding='utf-8') as f: json.dump(data,f,ensure_ascii=False,indent=2)
+          with open(os.path.join(pkgdir,'plugins.txt'),'w',encoding='utf-8') as f:
+            for p in data['plugins']:
+              f.write('%s|%s|%s|%s|%s\n'%(p['name'],p['title'],p['file'],p['size'],p['sha256']))
+          print('index refreshed; total',len(data['plugins']))
+          PY
+
       - name: Build nanoad and adbyby plugin packages
         working-directory: src
         run: |
@@ -257,5 +374,5 @@ jobs:
             独立插件包仓库，供固件「高级设置 → 插件管理」在线下载安装。
             架构：mipsel-linux-musl。每个 .tar.gz 内含二进制 + manifest.json。
             plugins.txt 为固件读取的 TSV 索引，plugins.json 为完整索引。
-            共 29 个插件（含 NanoAd 无密码版与 Adbyby）。动态链接插件依赖固件 /lib 中的 musl 运行库（完整固件/插件中心版均含）。
+            批量打包全部纯用户态插件（含 NanoAd 无密码版与 Adbyby），不含依赖内核模块的插件。动态链接插件依赖固件 /lib 中的 musl 运行库。
           files: src/plugin-repo/*

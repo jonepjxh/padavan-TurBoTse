@@ -726,6 +726,91 @@ match( const char *pattern, const char *string )
 	}
 }
 
+/* ------------------------------------------------------------------------
+ * plugincenter: 插件 Web 页面映射
+ *
+ * 固件根目录 /www 位于只读的 squashfs，插件安装时无法往里写页面；
+ * 插件解压目录 /etc/storage/plugins 在可写且持久的分区上。这里把
+ *
+ *     /plugin/<pkg>/<file>
+ *
+ * 直接映射为
+ *
+ *     /etc/storage/plugins/<pkg>/web/<file>
+ *
+ * 于是插件自带的 Advanced_*.asp / *.js / *.css / 图片都能被 httpd 正常分发
+ * （mime 表按后缀匹配，绝对路径同样命中；.asp 仍走 do_ej，登录校验照旧）。
+ * 插件被卸载（目录消失）后该前缀立即返回 404，无需重启 httpd。
+ * ------------------------------------------------------------------------ */
+#define PLUGIN_URL_PREFIX	"plugin/"
+#define PLUGIN_STORE_DIR	"/etc/storage/plugins"
+#define PLUGIN_WEB_SUBDIR	"web"
+#define PLUGIN_PKG_NAME_MAX	64
+#define PLUGIN_PATH_MAX		512
+
+static char *
+plugin_web_path(const char *url)
+{
+	static char path[PLUGIN_PATH_MAX];
+	const char *pkg, *pkg_end, *rest, *s;
+	char *d;
+	int all_dot;
+
+	if (strncmp(url, PLUGIN_URL_PREFIX, sizeof(PLUGIN_URL_PREFIX) - 1) != 0)
+		return NULL;
+
+	pkg = url + sizeof(PLUGIN_URL_PREFIX) - 1;
+	pkg_end = strchr(pkg, '/');
+	if (!pkg_end || pkg_end == pkg || *(pkg_end + 1) == '\0')
+		return NULL;
+	if ((size_t) (pkg_end - pkg) > PLUGIN_PKG_NAME_MAX)
+		return NULL;
+
+	/* 插件目录名白名单：[A-Za-z0-9._-]，且不允许纯点（"."/".."） */
+	all_dot = 1;
+	for (s = pkg; s < pkg_end; s++) {
+		unsigned char c = (unsigned char) *s;
+
+		if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+		      (c >= 'A' && c <= 'Z') || c == '_' || c == '-' || c == '.'))
+			return NULL;
+		if (c != '.')
+			all_dot = 0;
+	}
+	if (all_dot)
+		return NULL;
+
+	/* 剩余部分：禁止反斜杠与 ".." 路径段，防止跳出插件目录 */
+	rest = pkg_end + 1;
+	for (s = rest; ; s++) {
+		if (*s == '\\')
+			return NULL;
+		if (s[0] == '.' && s[1] == '.' &&
+		    (s == rest || s[-1] == '/') && (s[2] == '/' || s[2] == '\0'))
+			return NULL;
+		if (*s == '\0')
+			break;
+	}
+
+	if (strlen(PLUGIN_STORE_DIR) + (size_t) (pkg_end - pkg) +
+	    sizeof(PLUGIN_WEB_SUBDIR) + strlen(rest) + 4 > sizeof(path))
+		return NULL;
+
+	d = path;
+	strcpy(d, PLUGIN_STORE_DIR);
+	d += strlen(PLUGIN_STORE_DIR);
+	*d++ = '/';
+	memcpy(d, pkg, (size_t) (pkg_end - pkg));
+	d += (pkg_end - pkg);
+	*d++ = '/';
+	memcpy(d, PLUGIN_WEB_SUBDIR, sizeof(PLUGIN_WEB_SUBDIR) - 1);
+	d += sizeof(PLUGIN_WEB_SUBDIR) - 1;
+	*d++ = '/';
+	strcpy(d, rest);
+
+	return path;
+}
+
 static void
 eat_post_data(FILE *conn_fp, int clen)
 {
@@ -944,6 +1029,14 @@ handle_request(FILE *conn_fp, const conn_item_t *item)
 
 	query = file;
 	strsep(&query, "?");
+
+	/* plugincenter: 插件自带页面走 /plugin/<pkg>/<file>，映射到持久分区后按后缀分发 */
+	{
+		char *plugin_path = plugin_web_path(file);
+
+		if (plugin_path != NULL)
+			file = plugin_path;
+	}
 
 	usockaddr_to_uaddr(&item->usa, &conn_ip);
 

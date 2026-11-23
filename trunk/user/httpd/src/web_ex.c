@@ -77,7 +77,7 @@ static char post_buf[65535] = {0};
 static char post_buf_backup[65535] = {0};
 static char post_json_buf[65535] = {0};
 static char next_host[128] = {0};
-static char SystemCmd[128] = {0};
+static char SystemCmd[256] = {0};
 static int  group_del_map[MAX_GROUP_COUNT+2];
 extern void unescape(char *s);
 extern struct evDesc events_desc[];
@@ -2587,6 +2587,7 @@ ej_firmware_caps_hook(int eid, webs_t wp, int argc, char **argv)
 #else
 	int found_app_adbyby = 0;
 #endif
+	int found_app_plugincenter = 1;
 #if defined(APP_DNSFORWARDER)
 	int found_app_dnsforwarder = 1;
 #else
@@ -2790,6 +2791,7 @@ ej_firmware_caps_hook(int eid, webs_t wp, int argc, char **argv)
 		"function found_app_xupnpd() { return %d;}\n"
 		"function found_app_mentohust() { return %d;}\n"
 		"function found_app_adbyby() { return %d;}\n"
+		"function found_app_plugincenter() { return %d;}\n"
 		"function found_app_zerotier() { return %d;}\n"
 		"function found_app_ddnsto() { return %d;}\n"
 		"function found_app_aldriver() { return %d;}\n"
@@ -2824,6 +2826,7 @@ ej_firmware_caps_hook(int eid, webs_t wp, int argc, char **argv)
 		found_app_xupnpd,
 		found_app_mentohust,
 		found_app_adbyby,
+		found_app_plugincenter,
 		found_app_zerotier,
 		found_app_ddnsto,
 		found_app_aldriver,
@@ -3395,6 +3398,40 @@ static int ej_system_status_hook(int eid, webs_t wp, int argc, char **argv)
 			log.st_mtime
 		);
 
+	return 0;
+}
+
+
+/* plugin center: dump a plugin-state file to the ASP page.
+   usage: <% plugin_center("list"); %> or <% plugin_center("state"); %> */
+static int ej_plugin_center_hook(int eid, webs_t wp, int argc, char **argv)
+{
+	const char *path = "/etc/storage/plugins/.view.txt";
+	FILE *fp;
+	char buf[1024];
+	char *q;
+	int first = 1;
+
+	/* Emit a JavaScript array of quoted strings: ["name|title|...", ...] */
+	fputs("[", wp);
+	fp = fopen(path, "r");
+	if (fp) {
+		while (fgets(buf, sizeof(buf), fp) != NULL) {
+			buf[strcspn(buf, "\r\n")] = 0;
+			if (!buf[0]) continue;
+			if (!first) fputs(",", wp);
+			fputs("\"", wp);
+			for (q = buf; *q; ++q) {
+				if (*q == '"' || *q == '\\') fputs("\\", wp);
+				fputc(*q, wp);
+			}
+			fputs("\"", wp);
+			first = 0;
+		}
+		fclose(fp);
+	}
+	fputs("]", wp);
+	fflush(wp);
 	return 0;
 }
 
@@ -4211,6 +4248,240 @@ static char mentohust_log_txt[] =
 
 #endif
 
+/* ------------------------------------------------------------------------
+ * plugin center: dynamic menu for installed plugins
+ *
+ * Every plugin is extracted to /etc/storage/plugins/<pkg>/ and may carry a
+ * web/ directory with its own pages.  The left menu of the web UI is driven
+ * purely by state.js (tabtitle[] / tablink[]), so instead of patching the
+ * read-only squashfs or restarting httpd we append a few .push() lines right
+ * after state.js has been rendered.  Menu entry and page then appear as soon
+ * as the plugin directory exists, and vanish on uninstall.
+ *
+ * Plugin contract (all optional):
+ *   web/menu.conf   one entry per line:  <menu title>|<page file>
+ *   web/index.asp   fallback page, used with the package name as title
+ * Pages are served through /plugin/<pkg>/<page> (see plugin_web_path()).
+ * ------------------------------------------------------------------------ */
+#define PLUGIN_STORE_DIR		"/etc/storage/plugins"
+#define PLUGIN_WEB_DIR			"web"
+#define PLUGIN_MENU_CONF		"menu.conf"
+#define PLUGIN_DEFAULT_PAGE		"index.asp"
+#define PLUGIN_MENU_TAB			6	/* tabtitle[6] / tablink[6] == advanced settings */
+#define PLUGIN_MENU_NAME_MAX	64
+#define PLUGIN_MENU_MAX			32
+
+static void
+plugin_js_string(FILE *fp, const char *s, int len)
+{
+	int i;
+
+	fputc('"', fp);
+	for (i = 0; i < len; i++) {
+		unsigned char c = (unsigned char) s[i];
+
+		if (c == '"' || c == '\\')
+			fprintf(fp, "\\%c", c);
+		else if (c == '\n' || c == '\r' || c == '\t')
+			fputc(' ', fp);
+		else if (c < 0x20 || c == 0x7f)
+			continue;
+		else
+			fputc(c, fp);
+	}
+	fputc('"', fp);
+}
+
+/* page name: [A-Za-z0-9._/-] only, no absolute and no ".." segment */
+static int
+plugin_page_ok(const char *page)
+{
+	const char *s;
+	size_t len;
+
+	if (!page || !*page || page[0] == '/')
+		return 0;
+	len = strlen(page);
+	if (len > 96)
+		return 0;
+
+	for (s = page; *s; s++) {
+		unsigned char c = (unsigned char) *s;
+
+		if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+		      (c >= 'A' && c <= 'Z') || c == '_' || c == '-' ||
+		      c == '.' || c == '/'))
+			return 0;
+		if (c == '.' && s[1] == '.' &&
+		    (s == page || s[-1] == '/') && (s[2] == '/' || s[2] == '\0'))
+			return 0;
+	}
+
+	return 1;
+}
+
+static void
+plugin_menu_add(FILE *stream, const char *pkg, const char *title, const char *page)
+{
+	char title_buf[PLUGIN_MENU_NAME_MAX + 1];
+	char page_buf[192];
+	const char *p = title;
+	int n;
+
+	if (!plugin_page_ok(page))
+		return;
+
+	while (*p == ' ' || *p == '\t')
+		p++;
+	n = (int) strlen(p);
+	while (n > 0 && (p[n - 1] == ' ' || p[n - 1] == '\t' ||
+	                 p[n - 1] == '\r' || p[n - 1] == '\n'))
+		n--;
+	if (n <= 0) {
+		/* no title given: fall back to the package name */
+		p = pkg;
+		n = (int) strlen(pkg);
+	}
+	/* never cut an UTF-8 sequence in the middle */
+	if (n > PLUGIN_MENU_NAME_MAX) {
+		n = PLUGIN_MENU_NAME_MAX;
+		while (n > 0 && (((unsigned char) p[n]) & 0xc0) == 0x80)
+			n--;
+	}
+	memcpy(title_buf, p, (size_t) n);
+	title_buf[n] = '\0';
+
+	snprintf(page_buf, sizeof(page_buf), "/plugin/%s/%s", pkg, page);
+
+	fprintf(stream, "  tabtitle[%d].push(", PLUGIN_MENU_TAB);
+	plugin_js_string(stream, title_buf, (int) strlen(title_buf));
+	fprintf(stream, "); tablink[%d].push(", PLUGIN_MENU_TAB);
+	plugin_js_string(stream, page_buf, (int) strlen(page_buf));
+	fprintf(stream, ");\n");
+}
+
+static void
+plugin_menu_emit_pkg(FILE *stream, const char *pkg)
+{
+	char conf[256];
+	char line[256];
+	FILE *fp;
+	int added = 0;
+
+	snprintf(conf, sizeof(conf), "%s/%s/%s/%s",
+		PLUGIN_STORE_DIR, pkg, PLUGIN_WEB_DIR, PLUGIN_MENU_CONF);
+	fp = fopen(conf, "r");
+	if (fp) {
+		while (fgets(line, sizeof(line), fp)) {
+			char *bar = strchr(line, '|');
+			char *page;
+			char *tail;
+
+			if (!bar)
+				continue;
+			*bar = '\0';
+			page = bar + 1;
+			tail = page + strlen(page);
+			while (tail > page && (tail[-1] == '\r' || tail[-1] == '\n' ||
+			                       tail[-1] == ' ' || tail[-1] == '\t'))
+				*--tail = '\0';
+			plugin_menu_add(stream, pkg, line, page);
+			added = 1;
+		}
+		fclose(fp);
+	}
+
+	if (!added) {
+		/* 没有 menu.conf：按 index.asp -> index.html -> index.htm 找一个默认页面。
+		 * 多数第三方插件只提供 web/index.html，同样要能出现在菜单里。 */
+		static const char *const def_pages[] = {
+			PLUGIN_DEFAULT_PAGE, "index.html", "index.htm"
+		};
+		size_t i;
+
+		for (i = 0; i < sizeof(def_pages) / sizeof(def_pages[0]); i++) {
+			snprintf(conf, sizeof(conf), "%s/%s/%s/%s",
+				PLUGIN_STORE_DIR, pkg, PLUGIN_WEB_DIR, def_pages[i]);
+			if (access(conf, R_OK) == 0) {
+				plugin_menu_add(stream, pkg, pkg, def_pages[i]);
+				break;
+			}
+		}
+	}
+}
+
+static void
+plugin_menu_emit(FILE *stream)
+{
+	char names[PLUGIN_MENU_MAX][PLUGIN_MENU_NAME_MAX + 1];
+	char tmp[PLUGIN_MENU_NAME_MAX + 1];
+	char full[256];
+	struct dirent *de;
+	struct stat st;
+	DIR *dir;
+	size_t len;
+	int count = 0;
+	int i, j;
+
+	dir = opendir(PLUGIN_STORE_DIR);
+	if (!dir)
+		return;
+
+	while ((de = readdir(dir)) != NULL) {
+		if (de->d_name[0] == '.')
+			continue;
+		len = strlen(de->d_name);
+		if (len < 1 || len > PLUGIN_MENU_NAME_MAX)
+			continue;
+		snprintf(full, sizeof(full), "%s/%s/%s",
+			PLUGIN_STORE_DIR, de->d_name, PLUGIN_WEB_DIR);
+		if (stat(full, &st) != 0 || !S_ISDIR(st.st_mode))
+			continue;
+		if (count >= PLUGIN_MENU_MAX)
+			break;
+		strcpy(names[count], de->d_name);
+		count++;
+	}
+	closedir(dir);
+
+	if (count == 0)
+		return;
+
+	/* insertion sort: keep the menu order stable across page loads */
+	for (i = 1; i < count; i++) {
+		strcpy(tmp, names[i]);
+		for (j = i - 1; j >= 0 && strcmp(names[j], tmp) > 0; j--)
+			strcpy(names[j + 1], names[j]);
+		strcpy(names[j + 1], tmp);
+	}
+
+	fprintf(stream, "\n/* plugin center: dynamic menu (generated) */\n");
+	fprintf(stream, "if (typeof tabtitle != 'undefined' && tablink[%d] && tabtitle[%d]"
+	                " && tablink[%d].push && tabtitle[%d].push) {\n",
+	                PLUGIN_MENU_TAB, PLUGIN_MENU_TAB, PLUGIN_MENU_TAB, PLUGIN_MENU_TAB);
+	for (i = 0; i < count; i++)
+		plugin_menu_emit_pkg(stream, names[i]);
+	fprintf(stream, "}\n/* plugin center: dynamic menu end */\n");
+}
+
+static int
+plugin_is_state_js(const char *url)
+{
+	const char *p = strrchr(url, '/');
+
+	return strcmp(p ? p + 1 : url, "state.js") == 0;
+}
+
+/* state.js keeps <#...#> translation, then gets the plugin menu appended */
+static void
+do_js(const char *url, FILE *stream)
+{
+	do_cgi_clear();
+	do_ej(url, stream);
+	if (plugin_is_state_js(url))
+		plugin_menu_emit(stream);
+}
+
 struct mime_handler mime_handlers[] = {
 	/* cached javascript files w/o translations */
 	{ "jquery.js", "text/javascript", NULL, NULL, do_file, 0 }, // 2012.06 Eagle23
@@ -4245,8 +4516,8 @@ struct mime_handler mime_handlers[] = {
 	{ "**.htm*", "text/html", no_cache_IE, do_html_apply_post, do_ej, 1 },
 	{ "**.asp*", "text/html", no_cache_IE, do_html_apply_post, do_ej, 1 },
 
-	/* no-cached javascript files with translations */
-	{ "**.js",  "text/javascript", no_cache_IE, NULL, do_ej, 1 },
+	/* no-cached javascript files with translations (plugin menu injected) */
+	{ "**.js",  "text/javascript", no_cache_IE, NULL, do_js, 1 },
 
 	/* downloads objects */
 	{ "Settings_**.CFG", "application/force-download", NULL, NULL, do_nvram_file, 1 },
@@ -4527,6 +4798,7 @@ struct ej_handler ej_handlers[] =
 	{ "hardware_pins", ej_hardware_pins_hook},
 	{ "detect_internet", ej_detect_internet_hook},
 	{ "dump_syslog", ej_dump_syslog_hook},
+	{ "plugin_center", ej_plugin_center_hook},
 	{ "dump_eth_mib", ej_dump_eth_mib_hook},
 	{ "get_usb_ports_info", ej_get_usb_ports_info},
 	{ "get_ext_ports_info", ej_get_ext_ports_info},

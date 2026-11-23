@@ -155,3 +155,66 @@ This project is based on original rt-n56u with latest mtk 4.4.198 kernel, which 
 - How to use NAND RWFS partition
 - How to use IPv6 NAT and fullcone NAT
 - How to add new device support with device tree
+
+# Plugin Center: dynamic menu under Advanced Settings
+
+Install a plugin that ships a `web/` directory and its admin page shows up in the
+router menu by itself - no firmware rebuild, nothing written into the read-only
+`/www` squashfs.
+
+| Piece | File | What it does |
+| --- | --- | --- |
+| Menu injection | `trunk/user/httpd/src/web_ex.c` | `state.js` is served through `do_js()`, which appends `tabtitle[6].push(...)` / `tablink[6].push(...)` built by scanning `/etc/storage/plugins/*/web/` at request time |
+| Page routing | `trunk/user/httpd/src/httpd.c` | `/plugin/<pkg>/<file>` is mapped to `/etc/storage/plugins/<pkg>/web/<file>` |
+| Install hook | `trunk/user/scripts/files/usr/bin/pluginctl` | after install, writes `web/menu.conf` for plugins that ship a page but no menu file |
+
+## Plugin package layout
+
+```
+<plugin>.tar.gz
+|-- install.sh               # optional, run right after extraction
+|-- start.sh / stop.sh       # optional, hooked into the autostart list
+`-- web/
+    |-- menu.conf            # optional: one "Menu title|page" per line
+    |-- Advanced_mypage.asp  # served at /plugin/<pkg>/Advanced_mypage.asp
+    `-- index.html           # fallback when menu.conf is absent
+```
+
+Files are extracted to `/etc/storage/plugins/<pkg>/` (persistent partition), so
+`web/` survives reboots.
+
+## Menu file
+
+`web/menu.conf`, UTF-8, one entry per line:
+
+```
+广告过滤|Advanced_nanoad.asp
+运行日志|Advanced_nanoad_log.asp
+```
+
+- field 1: menu title (up to 64 bytes, trimmed on a UTF-8 char boundary)
+- field 2: file inside `web/` (no `/`, no `..`)
+- without `menu.conf` the httpd falls back to `index.asp` -> `index.html` -> `index.htm`
+  and uses the plugin directory name as the title
+
+## URLs served
+
+| Request | Served from |
+| --- | --- |
+| `/plugin/<pkg>/<file>` | `/etc/storage/plugins/<pkg>/web/<file>` |
+| `/plugin/<pkg>/css/a.css` | sub-directories are allowed |
+| `/plugin/../etc/passwd` | rejected: package name whitelist `[A-Za-z0-9._-]`, no `..` segment, no backslash |
+
+`.asp` pages still go through `do_ej()` (`<#tag#>` translation) and the usual login
+check; `.html` / `.js` / `.css` / images are served as-is. Relative references
+inside a plugin page resolve under `/plugin/<pkg>/`.
+
+## Checking from a shell
+
+```sh
+pluginctl menu       # name <TAB> title <TAB> /plugin/<pkg>/<page>
+```
+
+Reload any router page (state.js is regenerated on every request) and the entry
+appears under **Advanced Settings**. Uninstalling the plugin removes the entry,
+because both the menu and the page live in the plugin directory.

@@ -100,6 +100,15 @@ jobs:
           echo "CONFIG_FIRMWARE_ENABLE_USB=y" >> "$CFG"
           echo "CONFIG_FIRMWARE_ENABLE_EXT4=y" >> "$CFG"
           echo "CONFIG_FIRMWARE_ENABLE_FAT=y" >> "$CFG"
+          # STORAGE_ENABLED (trunk/user/Makefile) requires kernel CONFIG_BLK_DEV_SD,
+          # and u2ec requires CONFIG_USB_SUPPORT. K2P-USB board kernel config has
+          # all of those; swap it in while keeping the K2P board itself.
+          KCFG=trunk/configs/boards/K2P/kernel-4.4.x.config
+          UKCFG=trunk/configs/boards/K2P-USB/kernel-4.4.x.config
+          if [ -f "$UKCFG" ]; then
+            cp -f "$UKCFG" "$KCFG"
+            echo "swapped in K2P-USB kernel config for storage plugins"
+          fi
           for m in ARIA TRANSMISSION MINIDLNA FIREFLY FTPD; do
             echo "CONFIG_FIRMWARE_INCLUDE_${m}=y" >> "$CFG"
           done
@@ -114,6 +123,9 @@ jobs:
           # ZeroTier upstream Makefile has its compile line commented out and
           # installs the source DIR as the binary. Restore real build + path.
           ZM=trunk/user/zerotier/Makefile
+          # Upstream zerotier dir ships no patch files but Makefile applies two.
+          # They are ARM-only; on MIPS we drop the patch lines and keep the build.
+          sed -i '/0007-add-cerrno-header-for-str-errno/d; /0008-fix-compilation-for-arm_cortex-a7-neon/d' "$ZM" 2>/dev/null || true
           if [ -f "$ZM" ]; then
             sed -i 's/^#all: download_test extract_test/all: download_test extract_test/' "$ZM"
             sed -i 's|^#[[:space:]]*$(MAKE) -j$(HOST_NCPU) -C $(SRC_NAME)[[:space:]]*$|	$(MAKE) -j$(HOST_NCPU) -C $(SRC_NAME)|' "$ZM"
@@ -177,7 +189,7 @@ jobs:
           microsocks|usr/bin/microsocks
           smartdns|usr/bin/smartdns
           adguardhome|usr/bin/AdGuardHome
-          aliddns|usr/bin/aliddns
+          aliddns|usr/bin/aliddns.sh
           ddnsto|usr/bin/ddnsto
           aldriver|usr/bin/aliyundrive-webdav
           frp|usr/bin/frpc usr/bin/frps
@@ -190,9 +202,9 @@ jobs:
           dump1090|usr/bin/dump1090
           msd_lite|usr/bin/msd_lite
           vlmcsd|usr/bin/vlmcsd
-          mentohust|usr/bin/mentohust
+          mentohust|usr/bin/bin_mentohust
           u2ec|usr/bin/u2ec
-          scutclient|usr/bin/scutclient
+          scutclient|usr/bin/bin_scutclient
           dogcom|usr/bin/dogcom
           gdut_drcom|usr/bin/gdut-drcom
           minieap|usr/bin/minieap

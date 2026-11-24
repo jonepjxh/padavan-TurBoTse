@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title><#PluginDemo#></title>
+<title>插件页示例</title>
 <style>
 body { font-family: Arial, "Microsoft YaHei", sans-serif; font-size: 15px; margin: 14px; background: #f5f7fa; color: #1f2d3d; }
 h2 { font-size: 19px; margin: 0 0 12px; }
@@ -16,7 +16,7 @@ code { background: #eef3f8; padding: 1px 5px; border-radius: 4px; }
 </head>
 <body>
 
-<h2><#PluginDemo#></h2>
+<h2>插件页示例</h2>
 
 <div class="box">
 <table>

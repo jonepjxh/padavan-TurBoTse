@@ -380,6 +380,28 @@ jobs:
           wc -l plugin-repo/plugins.txt
           tail -5 plugin-repo/plugins.txt
 
+      - name: Inject plugin admin page (webui.conf + start/stop) into every package
+        working-directory: src
+        run: |
+          # Every plugin package gets a webui.conf (settings form rendered by the firmware
+          # generic admin page Advanced_plugincfg.asp) plus start.sh/stop.sh, so an installed
+          # plugin always has a working config page in the Web UI.
+          BASE=https://raw.githubusercontent.com/jonepjxh/padavan-TurBoTse/main/plugin-build
+          curl -fL --retry 3 -o /tmp/plugin-webui.tar.gz "$BASE/plugin-webui.tar.gz"
+          curl -fL --retry 3 -o /tmp/inject.py "$BASE/inject.py"
+          rm -rf /tmp/plugui-webui && mkdir -p /tmp/plugui-webui
+          tar -xzf /tmp/plugin-webui.tar.gz -C /tmp/plugui-webui
+          echo "payload packages: $(ls /tmp/plugui-webui | wc -l)"
+          WEBUI_ROOT=/tmp/plugui-webui INJECT_TMP=/tmp python3 /tmp/inject.py
+          echo "=== index after injection (head) ==="
+          head -5 plugin-repo/plugins.txt
+          echo "=== spot check package contents ==="
+          for pk in smartdns zerotier dns2tcp htop nanoad; do
+            echo "--- $pk ---"
+            tar -tzf "plugin-repo/$pk.tar.gz" | tr '\n' ' '
+            echo
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: plugin-repo-${{ env.BUILD_DATE }}

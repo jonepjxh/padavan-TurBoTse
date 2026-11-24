@@ -41,6 +41,14 @@ jobs:
 
       - name: Apply Plugin Center overlay + Plugin WebUI (no NanoAd)
         run: |
+          # Generic plugin WebUI framework: baked settings page (Advanced_plugincfg.asp).
+          # NOTE: it also ships older web_ex.c / pluginctl / state.js / Advanced_plugincenter.asp,
+          # so it MUST be applied BEFORE plugincenter-overlay, otherwise the plugin-center
+          # changes get silently overwritten (regression seen in build 20261124-04:51).
+          curl -fL --retry 3 -o pc-webui-overlay.tar.gz \
+            "https://raw.githubusercontent.com/jonepjxh/padavan-TurBoTse/main/plugin-webui-overlay.tar.gz"
+          tar -xzf pc-webui-overlay.tar.gz -C src
+          echo "Plugin WebUI overlay applied (then overridden by plugincenter overlay)."
           # plugincenter-overlay.tar.gz carries only the plugin-center pieces:
           # web_ex.c hooks, pluginctl, CN.dict, Advanced_plugincenter.asp, state.js.
           # Lite baseline keeps CONFIG_FIRMWARE_INCLUDE_ADBYBY=n, so no NanoAd is built.
@@ -48,11 +56,6 @@ jobs:
             https://raw.githubusercontent.com/jonepjxh/padavan-TurBoTse/main/plugincenter-overlay.tar.gz
           tar -xzf pc-overlay.tar.gz -C src
           echo "Plugin Center overlay applied."
-          # Generic plugin WebUI framework: baked settings page + C hook + pluginctl config API.
-          curl -fL --retry 3 -o pc-webui-overlay.tar.gz \
-            "https://raw.githubusercontent.com/jonepjxh/padavan-TurBoTse/main/plugin-webui-overlay.tar.gz"
-          tar -xzf pc-webui-overlay.tar.gz -C src
-          echo "Plugin WebUI overlay applied."
 
       - name: Seed udns source (upstream mirrors are dead)
         run: |

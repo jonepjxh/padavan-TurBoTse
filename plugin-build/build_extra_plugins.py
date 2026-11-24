@@ -23,6 +23,29 @@ STRIP = os.environ.get('CROSS_STRIP', os.path.join(SRC, 'toolchain', 'mipsel-lin
 FANCY = {'nanoad': 'NanoAd 广告过滤', 'adbyby': 'Adbyby 广告过滤'}
 errors = []
 
+ADBYBY_PAGE = '''<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Adbyby 广告过滤</title>
+<style>body{font-family:sans-serif;padding:18px;line-height:1.7}code{background:#f2f2f2;padding:1px 4px}</style>
+</head>
+<body>
+<h3>Adbyby 广告过滤</h3>
+<p>插件由固件自带的 adbyby 程序组成，安装后在「高级设置 - 广告管理」里出现本页。</p>
+<p>启停请在「高级设置 - 插件中心」操作，日志见 <code>/tmp/adbyby.log</code>。</p>
+</body>
+</html>
+'''
+
+
+def write_menu_conf(tmpd, title, page, cat):
+    """写 web/menu.conf：标题|页面文件|分类，供 httpd 生成插件菜单。"""
+    wdir = os.path.join(tmpd, 'web')
+    os.makedirs(wdir, exist_ok=True)
+    with open(os.path.join(wdir, 'menu.conf'), 'w', encoding='utf-8') as f:
+        f.write('%s|%s|%s\n' % (title, page, cat))
+
 
 def add_file(tf, path, arcname):
     tf.add(path, arcname)
@@ -79,6 +102,8 @@ def make_nanoad():
     web = os.path.join(src_dir, 'web', 'index.html')
     if os.path.isfile(web):
         sh(web, os.path.join(tmpd, 'web', 'index.html'))
+        # 菜单：标题|页面|分类（分类决定它归到「高级设置」下哪个目录）
+        write_menu_conf(tmpd, FANCY['nanoad'], 'index.html', 'ad')
     for s in ('install.sh', 'start.sh', 'stop.sh'):
         p = os.path.join(PATCH, 'nanoad', s)
         if os.path.isfile(p):
@@ -121,6 +146,12 @@ def make_adbyby():
     if os.path.isdir(tmpd):
         shutil.rmtree(tmpd)
     os.makedirs(tmpd, exist_ok=True)
+    # 广告过滤插件自带一个极简页，插件中心才能给它挂「广告管理」菜单
+    wdir = os.path.join(tmpd, 'web')
+    os.makedirs(wdir, exist_ok=True)
+    with open(os.path.join(wdir, 'index.html'), 'w', encoding='utf-8') as f:
+        f.write(ADBYBY_PAGE)
+    write_menu_conf(tmpd, FANCY['adbyby'], 'index.html', 'ad')
     sh(bundle, os.path.join(tmpd, 'adbyby.tar.gz'))
     # launcher script from romfs if present, else minimal
     launcher = os.path.join(SRC, 'trunk', 'romfs', 'usr', 'bin', 'adbyby.sh')

@@ -200,6 +200,8 @@ jobs:
           done
 
       - name: Build Firmware
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: |
           make ${{ inputs.target }} TOOLCHAIN=${{ inputs.toolchain }}
           mkdir -p trunk/output

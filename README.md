@@ -281,6 +281,30 @@ PLUGIN_REPO_MIRROR=http://192.168.1.10/plugin-repo pluginctl sync
 下载走 `gh-proxy.com` → 原始地址 → `ghproxy.net` 三个候选，任一成功即返回；因为
 GitHub release-assets 在部分网络下直连 443 会超时，镜像优先。
 
+### 由源码交叉编译的第三方插件
+
+`plugins/build-plugins.sh` + `.github/workflows/build-plugins.yml` 把 GitHub 上游源码交叉
+编译成 mipsel-linux-musl 静态包（`CGO_ENABLED=0 GOARCH=mipsle GOMIPS=softfloat`，UPX 压缩），
+push `plugins/**` 或手动触发工作流就会重新打包并刷新 `plugins.txt`。
+
+| 插件 | 版本 | 分类 | 说明 |
+| --- | --- | --- | --- |
+| ddns-go | v6.10.0 | DNS服务 | 多服务商 DDNS，Web 管理页 `http://路由器:9876` |
+| mosdns | master | DNS服务 | 本地 DNS 服务，默认 `0.0.0.0:5353`，配置在插件目录 `config.yaml` |
+| trojan-go | master | 科学上网 | 需先把 `config.example.json` 复制到 `.home/trojan-go/config.json` 再启动 |
+| speedtest-go | v1.8.0 | 网络工具 | 命令行测速：`speedtest-go --server --all`、`speedtest-go` |
+| acme.sh | v3.1.7 | 其他插件 | 证书申请/续期，工作目录 `/etc/storage/plugins/.home/acme.sh` |
+
+两个必须记住的坑：
+
+1. **Go 版本必须锁 1.25，不能用 1.26**。go1.26 编出来的 mipsle 二进制在 K2P 的 4.4 内核上
+   启动即崩（`runtime.futexwakeup ... returned -89` + SIGSEGV）；go1.23/1.25 编的同源二进制
+   正常。脚本里是 `GOTOOLCHAIN=local` 配合 workflow 的 `setup-go 1.25`，所以上游模块如果
+   把 `go.mod` 提到 1.26（ddns-go v6.18、gotty、speedtest-go master 都是这样），就必须钉一个
+   旧 tag，否则构建直接失败。
+2. **插件 payload 放 RAM**（`/tmp/plugins`，24MB tmpfs），128MB 内存的 K2P 同时跑多个 Go
+   插件会很紧张：装太多会 `runtime: out of memory`，也不需要一次把清单里的都装上。
+
 ## 命令行
 
 ```sh

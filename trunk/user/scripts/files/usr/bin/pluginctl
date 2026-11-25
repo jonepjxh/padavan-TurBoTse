@@ -372,7 +372,8 @@ unregister_autostart(){
 }
 
 cmd_start(){
-    local name="$1" s="$BASE/$name/start.sh"
+    local name="$1"
+    local s="$BASE/$name/start.sh"
     nvram_enable_set "$name" 1
     if [ -f "$s" ]; then
         # 后台跑一遍 start.sh（插件内部自己再 daemon 化），1 秒后确认进程/端口
@@ -384,7 +385,8 @@ cmd_start(){
     fi
 }
 cmd_stop(){
-    local name="$1" s="$BASE/$name/stop.sh"
+    local name="$1"
+    local s="$BASE/$name/stop.sh"
     if [ -f "$s" ]; then ( cd "$BASE/$name" && sh "$s" ) >/dev/null 2>&1
     else [ -f "$BASE/$name/run.pid" ] && kill "$(cat "$BASE/$name/run.pid")" 2>/dev/null; fi
     nvram_enable_set "$name" 0

@@ -59,8 +59,8 @@ build_frontend(){ # dir
 	[ -f "$d/package.json" ] || return 0
 	log "frontend build: $d"
 	if [ -f "$d/pnpm-lock.yaml" ]; then
-		( cd "$d" && pnpm install --frozen-lockfile --reporter=silent && pnpm run build ) >"$WORK/frontend.log" 2>&1 || {
-			log "FRONTEND FAIL $d"; tail -15 "$WORK/frontend.log"; return 1; }
+		( cd "$d" && pnpm install --frozen-lockfile && pnpm run build ) >"$WORK/frontend.log" 2>&1 || {
+			log "FRONTEND FAIL $d"; log "$(tail -20 "$WORK/frontend.log" 2>&1 | tr '\n' ' ')"; return 1; }
 	else
 		( cd "$d" && npm install --no-audit --no-fund --legacy-peer-deps && npm run build ) >"$WORK/frontend.log" 2>&1 || {
 			log "FRONTEND FAIL $d"; tail -15 "$WORK/frontend.log"; return 1; }
@@ -268,7 +268,7 @@ EOF
 fi
 
 log "== cfddns"
-if V=$(fetch_src cfddns favonia/cloudflare-ddns v1.14.0) && gobuild cfddns .; then
+if V=$(fetch_src cfddns favonia/cloudflare-ddns v1.14.0) && gobuild cfddns ./cmd/ddns; then
 	stage cfddns "CF域名解析" dns
 	cp "$WORK/bin/cfddns" "$ST/cfddns/usr/bin/cloudflare-ddns"
 	cat > "$ST/cfddns/env.example" <<'EOF'

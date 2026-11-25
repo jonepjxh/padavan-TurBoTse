@@ -28,7 +28,9 @@ jobs:
 
       - name: Install pnpm
         run: |
-          npm i -g pnpm@9 || true
+          corepack enable || true
+          npm i -g pnpm@10 || true
+          pnpm --version
 
       - name: Install upx
         run: |

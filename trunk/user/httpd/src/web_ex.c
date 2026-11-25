@@ -1166,6 +1166,47 @@ pinvalidate(char *pin_string)
 }
 #endif
 
+/* 插件原生页上的「应用设置」：页面把 nvram 存好就完事，服务重启要靠这里。
+ * 只在该插件确实已经装进 /etc/storage/plugins 时才动手。 */
+static void
+plugin_restart_from_apply(webs_t wp)
+{
+	static const struct {
+		const char *page;
+		const char *pkg;
+	} map[] = {
+		{ "Advanced_smartdns.asp",  "smartdns" },
+		{ "Advanced_aliddns.asp",   "aliddns" },
+		{ "Advanced_zerotier.asp",  "zerotier" },
+		{ "Advanced_wireguard.asp", "wireguard" },
+		{ "Advanced_ddnsto.asp",    "ddnsto" },
+		{ "Advanced_frp.asp",       "frp" },
+		{ "Advanced_aliyundrive.asp","aldriver" },
+		{ "Advanced_adbyby.asp",    "adbyby" },
+		{ "Advanced_adguardhome.asp","adguardhome" },
+		{ "Advanced_SQM.asp",       "sqm" },
+		{ NULL, NULL }
+	};
+	char pg[64], path[128], cmd[160];
+	int i;
+
+	snprintf(pg, sizeof(pg), "%s", websGetVar(wp, "current_page", ""));
+	if (!pg[0])
+		return;
+	for (i = 0; map[i].page; i++) {
+		if (strcmp(pg, map[i].page))
+			continue;
+		snprintf(path, sizeof(path), "/etc/storage/plugins/%s/manifest.json",
+		         map[i].pkg);
+		if (access(path, R_OK))
+			return;
+		snprintf(cmd, sizeof(cmd),
+		         "/usr/bin/pluginctl restart %s >/dev/null 2>&1 &", map[i].pkg);
+		system(cmd);
+		return;
+	}
+}
+
 static int
 update_variables_ex(int eid, webs_t wp, int argc, char **argv)
 {
@@ -1321,6 +1362,8 @@ update_variables_ex(int eid, webs_t wp, int argc, char **argv)
 		
 		websWrite(wp, "<script>restart_needed_time(%u);</script>\n", restart_total_time);
 	}
+
+	plugin_restart_from_apply(wp);
 
 	return 0;
 }
@@ -2334,6 +2377,26 @@ static int smartdns_status_hook(int eid, webs_t wp, int argc, char **argv)
 {
 	int smartdns_status_code = pids("smartdns");
 	websWrite(wp, "function smartdns_status() { return %d;}\n", smartdns_status_code);
+	return 0;
+}
+#endif
+
+/* 插件按需安装时固件并没有编入 APP_SMARTDNS / APP_ZEROTIER，
+ * 但原版页面顶部要 <% smartdns_status(); %> 才能点亮「运行状态」，
+ * 这里补一个只查进程的钩子（插件由插件中心启动，进程名不变）。 */
+#if !defined (APP_SMARTDNS)
+static int
+pcplugin_smartdns_status_hook(int eid, webs_t wp, int argc, char **argv)
+{
+	websWrite(wp, "function smartdns_status() { return %d;}\n", pids("smartdns"));
+	return 0;
+}
+#endif
+#if !defined (APP_ZEROTIER)
+static int
+pcplugin_zerotier_status_hook(int eid, webs_t wp, int argc, char **argv)
+{
+	websWrite(wp, "function zerotier_status() { return %d;}\n", pids("zerotier-one"));
 	return 0;
 }
 #endif
@@ -4450,6 +4513,53 @@ plugin_cat_guess(const char *pkg, const char *title)
 	return PLUGIN_CAT_COUNT - 1;
 }
 
+/* 插件自带的原生管理页（如 Advanced_smartdns.asp）：固件 www 里真有这个文件时，
+ * 就优先用它，而不是通用表单页 —— 装完插件看到的必须是原版界面。 */
+static const struct {
+	const char *pkg;
+	const char *page;
+} plugin_native_page_map[] = {
+	{ "smartdns",    "/Advanced_smartdns.asp#cfg" },
+	{ "aliddns",     "/Advanced_aliddns.asp" },
+	{ "zerotier",    "/Advanced_zerotier.asp" },
+	{ "wireguard",   "/Advanced_wireguard.asp" },
+	{ "ddnsto",      "/Advanced_ddnsto.asp" },
+	{ "frp",         "/Advanced_frp.asp" },
+	{ "aldriver",    "/Advanced_aliyundrive.asp" },
+	{ "aliyundrive", "/Advanced_aliyundrive.asp" },
+	{ "adbyby",      "/Advanced_adbyby.asp" },
+	{ "adguardhome", "/Advanced_adguardhome.asp" },
+	{ "sqm",         "/Advanced_SQM.asp#cfg" },
+	{ NULL, NULL }
+};
+
+static const char *
+plugin_native_page(const char *pkg)
+{
+	char path[96];
+	const char *hash;
+	size_t n;
+	int i;
+
+	if (!pkg || !*pkg)
+		return NULL;
+	for (i = 0; plugin_native_page_map[i].pkg; i++) {
+		if (strcmp(plugin_native_page_map[i].pkg, pkg))
+			continue;
+		hash = strchr(plugin_native_page_map[i].page, '#');
+		n = hash ? (size_t) (hash - plugin_native_page_map[i].page)
+		         : strlen(plugin_native_page_map[i].page);
+		if (n + 5 >= sizeof(path))
+			return NULL;
+		snprintf(path, sizeof(path), "/www%.*s", (int) n,
+		         plugin_native_page_map[i].page);
+		if (access(path, R_OK) == 0)
+			return plugin_native_page_map[i].page;
+		return NULL;
+	}
+	return NULL;
+}
+
 static void
 plugin_menu_add(const char *pkg, const char *title, const char *page, const char *cat)
 {
@@ -4496,6 +4606,10 @@ plugin_menu_add(const char *pkg, const char *title, const char *page, const char
 		 * 开关自启，插件自带 webui.conf 时还能直接改配置。
 		 * 这样独立安装的插件和编进固件里的插件一样有管理入口。 */
 		snprintf(it->page, sizeof(it->page), "%s%s", PLUGIN_CFG_PAGE, pkg);
+
+	/* 固件里有这个插件的原版管理页时，一律用原版页面 */
+	if (plugin_native_page(pkg))
+		snprintf(it->page, sizeof(it->page), "%s", plugin_native_page(pkg));
 
 	idx = plugin_cat_by_key(cat);
 	if (idx < 0)
@@ -5637,6 +5751,8 @@ struct ej_handler ej_handlers[] =
 #endif
 #if defined (APP_ZEROTIER)
 	{ "zerotier_status", zerotier_status_hook},
+#else
+	{ "zerotier_status", pcplugin_zerotier_status_hook},
 #endif
 #if defined (APP_DDNSTO)
 	{ "ddnsto_status", ddnsto_status_hook},
@@ -5649,6 +5765,8 @@ struct ej_handler ej_handlers[] =
 #endif
 #if defined (APP_SMARTDNS)
 	{ "smartdns_status", smartdns_status_hook},
+#else
+	{ "smartdns_status", pcplugin_smartdns_status_hook},
 #endif
 #if defined (APP_FRP)
 	{ "frpc_status", frpc_status_hook},

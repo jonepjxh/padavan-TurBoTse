@@ -147,7 +147,8 @@ ifneq ($(CONFIG_FIRMWARE_INCLUDE_SCUTCLIENT),y)
 	rm -f $(INSTALLDIR)/www/scutclient_action.asp
 endif
 ifneq ($(CONFIG_FIRMWARE_INCLUDE_ADGUARDHOME),y)
-	rm -f $(INSTALLDIR)/www/Advanced_adguardhome.asp
+	# plugin center: 保留原生插件页 Advanced_adguardhome.asp（按需安装的插件要有原版管理界面）
+	#rm -f $(INSTALLDIR)/www/Advanced_adguardhome.asp
 endif
 ifneq ($(CONFIG_FIRMWARE_INCLUDE_MENTOHUST),y)
 	rm -f $(INSTALLDIR)/www/mentohust.asp
@@ -163,32 +164,42 @@ ifneq ($(CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS),y)
 	rm -f $(INSTALLDIR)/www/Shadowsocks_log.asp
 endif
 ifneq ($(CONFIG_FIRMWARE_INCLUDE_ADBYBY),y)
-	rm -f $(INSTALLDIR)/www/Advanced_adbyby.asp
+	# plugin center: 保留原生插件页 Advanced_adbyby.asp（按需安装的插件要有原版管理界面）
+	#rm -f $(INSTALLDIR)/www/Advanced_adbyby.asp
 endif
 ifneq ($(CONFIG_FIRMWARE_INCLUDE_ALIDDNS),y)
-	rm -f $(INSTALLDIR)/www/Advanced_aliddns.asp
+	# plugin center: 保留原生插件页 Advanced_aliddns.asp（按需安装的插件要有原版管理界面）
+	#rm -f $(INSTALLDIR)/www/Advanced_aliddns.asp
 endif
 ifneq ($(CONFIG_FIRMWARE_INCLUDE_ZEROTIER),y)
-	rm -f $(INSTALLDIR)/www/Advanced_zerotier.asp
+	# plugin center: 保留原生插件页 Advanced_zerotier.asp（按需安装的插件要有原版管理界面）
+	#rm -f $(INSTALLDIR)/www/Advanced_zerotier.asp
 endif
 ifeq ($(CONFIG_FIRMWARE_INCLUDE_FRPC)_$(CONFIG_FIRMWARE_INCLUDE_FRPS), n_n)
-	rm -f $(INSTALLDIR)/www/Advanced_frp.asp
-	rm -f $(INSTALLDIR)/www/Advanced_frp_log.asp
+	# plugin center: 保留原生插件页 Advanced_frp.asp（按需安装的插件要有原版管理界面）
+	#rm -f $(INSTALLDIR)/www/Advanced_frp.asp
+	# plugin center: 保留原生插件页 Advanced_frp_log.asp（按需安装的插件要有原版管理界面）
+	#rm -f $(INSTALLDIR)/www/Advanced_frp_log.asp
 endif
 ifneq ($(CONFIG_FIRMWARE_INCLUDE_DDNSTO),y)
-	rm -f $(INSTALLDIR)/www/Advanced_ddnsto.asp
+	# plugin center: 保留原生插件页 Advanced_ddnsto.asp（按需安装的插件要有原版管理界面）
+	#rm -f $(INSTALLDIR)/www/Advanced_ddnsto.asp
 endif
 ifneq ($(CONFIG_FIRMWARE_INCLUDE_WIREGUARD),y)
-	rm -f $(INSTALLDIR)/www/Advanced_wireguard.asp
+	# plugin center: 保留原生插件页 Advanced_wireguard.asp（按需安装的插件要有原版管理界面）
+	#rm -f $(INSTALLDIR)/www/Advanced_wireguard.asp
 endif
 ifneq ($(CONFIG_FIRMWARE_INCLUDE_ALDRIVER),y)
-	rm -f $(INSTALLDIR)/www/Advanced_aliyundrive.asp
+	# plugin center: 保留原生插件页 Advanced_aliyundrive.asp（按需安装的插件要有原版管理界面）
+	#rm -f $(INSTALLDIR)/www/Advanced_aliyundrive.asp
 endif
 ifneq ($(CONFIG_FIRMWARE_INCLUDE_SQM),y)
-	rm -f $(INSTALLDIR)/www/Advanced_SQM.asp
+	# plugin center: 保留原生插件页 Advanced_SQM.asp（按需安装的插件要有原版管理界面）
+	#rm -f $(INSTALLDIR)/www/Advanced_SQM.asp
 endif
 ifneq ($(CONFIG_FIRMWARE_INCLUDE_SMARTDNS),y)
-	rm -f $(INSTALLDIR)/www/Advanced_smartdns.asp
+	# plugin center: 保留原生插件页 Advanced_smartdns.asp（按需安装的插件要有原版管理界面）
+	#rm -f $(INSTALLDIR)/www/Advanced_smartdns.asp
 endif
 ifneq ($(CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN_SERVER),y)
 	rm -f $(INSTALLDIR)/www/vpnsrv.asp

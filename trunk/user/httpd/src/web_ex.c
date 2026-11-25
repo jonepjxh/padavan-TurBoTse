@@ -4722,10 +4722,9 @@ plugin_menu_emit(FILE *stream)
 	plugin_menu_item_t *it;
 
 	dir = opendir(PLUGIN_STORE_DIR);
-	if (!dir)
-		return;
-
-	while ((de = readdir(dir)) != NULL) {
+	/* 插件目录还不存在（没装过任何插件）时也要注入「插件中心」入口，
+	   所以这里不能 return，按 0 个插件继续往下走 */
+	while (dir && (de = readdir(dir)) != NULL) {
 		if (de->d_name[0] == '.')
 			continue;
 		len = strlen(de->d_name);
@@ -4745,7 +4744,8 @@ plugin_menu_emit(FILE *stream)
 		strcpy(names[count], de->d_name);
 		count++;
 	}
-	closedir(dir);
+	if (dir)
+		closedir(dir);
 
 	/* insertion sort: keep the menu order stable across page loads */
 	for (i = 1; i < count; i++) {
@@ -5097,7 +5097,8 @@ plugin_list_names(char names[][PLUGIN_MENU_NAME_MAX + 1], int max)
 		strcpy(names[count], de->d_name);
 		count++;
 	}
-	closedir(dir);
+	if (dir)
+		closedir(dir);
 
 	for (i = 1; i < count; i++) {
 		strcpy(tmp, names[i]);

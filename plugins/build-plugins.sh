@@ -51,6 +51,23 @@ gobuild(){ # name pkgpath
 	fi
 	log "built $n $(stat -c%s "$WORK/bin/$n") bytes"
 }
+
+# 前端资源：filebrowser（pnpm）、message-pusher（npm）这类仓库把 dist 放在 .gitignore，
+# 不跑一遍前端构建，Go 的 //go:embed 就抓不到文件，装到路由上只会 404 白屏。
+build_frontend(){ # dir
+	local d="$1"
+	[ -f "$d/package.json" ] || return 0
+	log "frontend build: $d"
+	if [ -f "$d/pnpm-lock.yaml" ]; then
+		( cd "$d" && pnpm install --frozen-lockfile --reporter=silent && pnpm run build ) >"$WORK/frontend.log" 2>&1 || {
+			log "FRONTEND FAIL $d"; tail -15 "$WORK/frontend.log"; return 1; }
+	else
+		( cd "$d" && npm install --no-audit --no-fund --legacy-peer-deps && npm run build ) >"$WORK/frontend.log" 2>&1 || {
+			log "FRONTEND FAIL $d"; tail -15 "$WORK/frontend.log"; return 1; }
+	fi
+	log "frontend ok: $d"
+}
+
 mkdir -p "$WORK/bin"
 
 # 组装包目录：name title cat
@@ -226,6 +243,65 @@ EOF
 desc|说明|text|命令行工具：acme.sh --issue -d 域名 --standalone 或 --dns dns_ali（需先 export 阿里云 Key）；证书默认存 /etc/storage/plugins/.home/acme.sh
 WEOF
 	pack acme.sh "ACME证书" misc
+fi
+
+log "== lucky"
+if V=$(fetch_src lucky gdy666/lucky v3.5.0) && gobuild lucky .; then
+	stage lucky "Lucky" tunnel
+	cp "$WORK/bin/lucky" "$ST/lucky/usr/bin/lucky"
+	gen_start lucky '$B/usr/bin/lucky -p 16601'
+	cat > "$ST/lucky/webui.conf" <<'EOF'
+desc|说明|text|管理面板 http://192.168.8.1:16601 默认账号 666 密码 666；端口转发/反代/DDNS/STUN 穿透/证书都在这里配
+EOF
+	pack lucky "Lucky" tunnel
+fi
+
+log "== filebrowser"
+if V=$(fetch_src filebrowser filebrowser/filebrowser v2.63.23) && build_frontend "$WORK/src/filebrowser/frontend" && gobuild filebrowser .; then
+	stage filebrowser "FileBrowser文件管理" nas
+	cp "$WORK/bin/filebrowser" "$ST/filebrowser/usr/bin/filebrowser"
+	gen_start filebrowser '$B/usr/bin/filebrowser -d $H/fb.db -p 8088 -a 0.0.0.0 -r /'
+	cat > "$ST/filebrowser/webui.conf" <<'EOF'
+desc|说明|text|浏览器打开 http://192.168.8.1:8088 首次进入用 admin/admin 登录后改密码，可浏览全盘文件
+EOF
+	pack filebrowser "FileBrowser文件管理" nas
+fi
+
+log "== cfddns"
+if V=$(fetch_src cfddns favonia/cloudflare-ddns v1.14.0) && gobuild cfddns .; then
+	stage cfddns "CF域名解析" dns
+	cp "$WORK/bin/cfddns" "$ST/cfddns/usr/bin/cloudflare-ddns"
+	cat > "$ST/cfddns/env.example" <<'EOF'
+CLOUDFLARE_API_TOKEN=在这里填你的 Cloudflare API Token
+DOMAINS=home.example.com
+PROXIED=true
+EOF
+	cat > "$ST/cfddns/start.sh" <<'EOF'
+#!/bin/sh
+B=/etc/storage/plugins/cfddns
+H=/etc/storage/plugins/.home/cfddns
+mkdir -p "$H"
+[ -f "$H/run.pid" ] && kill "$(cat "$H/run.pid")" 2>/dev/null
+[ -f "$H/env" ] || cp "$B/env.example" "$H/env"
+. "$H/env"
+case "$CLOUDFLARE_API_TOKEN" in ""|*"在这里填"*) logger -t pluginctl "cfddns: 先在 /etc/storage/plugins/.home/cfddns/env 里填 API Token"; exit 0;; esac
+cd "$H" || exit 1
+export HOME="$H"
+"$B/usr/bin/cloudflare-ddns" >>/tmp/cfddns.log 2>&1 &
+echo $! > "$H/run.pid"
+EOF
+	cat > "$ST/cfddns/stop.sh" <<'EOF'
+#!/bin/sh
+H=/etc/storage/plugins/.home/cfddns
+[ -f "$H/run.pid" ] && kill "$(cat "$H/run.pid")" 2>/dev/null
+killall cloudflare-ddns 2>/dev/null
+rm -f "$H/run.pid"
+EOF
+	chmod +x "$ST/cfddns/start.sh" "$ST/cfddns/stop.sh"
+	cat > "$ST/cfddns/webui.conf" <<'EOF'
+desc|说明|text|编辑 /etc/storage/plugins/.home/cfddns/env 填 CLOUDFLARE_API_TOKEN 和 DOMAINS，然后在插件中心启用
+EOF
+	pack cfddns "CF域名解析" dns
 fi
 
 echo "================ SUMMARY"

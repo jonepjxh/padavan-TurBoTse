@@ -387,8 +387,10 @@ jobs:
           # generic admin page Advanced_plugincfg.asp) plus start.sh/stop.sh, so an installed
           # plugin always has a working config page in the Web UI.
           BASE=https://raw.githubusercontent.com/jonepjxh/padavan-TurBoTse/main/plugin-build
-          curl -fL --retry 3 -o /tmp/plugin-webui.tar.gz "$BASE/plugin-webui.tar.gz"
-          curl -fL --retry 3 -o /tmp/inject.py "$BASE/inject.py"
+          # cache-buster: raw.githubusercontent CDN caches aggressively; force fresh payload
+          CB="v=$RANDOM$RANDOM"
+          curl -fL --retry 3 -o /tmp/plugin-webui.tar.gz "$BASE/plugin-webui.tar.gz?$CB"
+          curl -fL --retry 3 -o /tmp/inject.py "$BASE/inject.py?$CB"
           rm -rf /tmp/plugui-webui && mkdir -p /tmp/plugui-webui
           tar -xzf /tmp/plugin-webui.tar.gz -C /tmp/plugui-webui
           echo "payload packages: $(ls /tmp/plugui-webui | wc -l)"

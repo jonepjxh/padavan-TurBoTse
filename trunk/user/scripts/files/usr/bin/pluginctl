@@ -205,6 +205,25 @@ plugin_web_register(){
     log "menu registered: $title -> /plugin/$name/$page ${cat:+[$cat]}"
 }
 
+# ---- 原生插件页的「启用」开关：让插件中心的启用/停用与它保持一致 ----
+# 这些插件包里的 start.sh 会自己检查 nvram 开关，不置 1 就不会真正跑起来，
+# 所以插件中心启停时必须同步这个键，否则界面上「已启用」而进程根本没起。
+pkg_nvram_enable(){
+    case "$1" in
+        smartdns)  echo sdns_enable ;;
+        zerotier)  echo zerotier_enable ;;
+        wireguard) echo wireguard_enable ;;
+        aliddns)   echo aliddns_enable ;;
+        *)         echo "" ;;
+    esac
+}
+nvram_enable_set(){
+    local k=$(pkg_nvram_enable "$1") v="$2"
+    [ -n "$k" ] || return 0
+    [ "$(nvram get "$k")" = "$v" ] && return 0
+    nvram set "$k" "$v" 2>/dev/null && nvram commit 2>/dev/null
+}
+
 # ---- 插件配置：master 放在 DATA（持久），运行副本放 BASE（RAM） ----
 cfg_save(){
     [ -f "$BASE/$1/config" ] || return 0
@@ -238,6 +257,8 @@ cmd_restore(){
         if [ ! -d "$BASE/$name" ]; then
             log "restore: installing $name"
             cmd_install "$name" >/dev/null 2>&1
+            # cmd_install 默认置 installed=1 enabled=0，这里恢复原来的启用标记
+            state_set "$name" 1 "$en"
             if [ ! -d "$BASE/$name" ]; then
                 log "restore: $name failed (network?)"
                 continue
@@ -245,8 +266,11 @@ cmd_restore(){
         else
             cfg_load "$name"
         fi
-        if [ "$en" = "1" ] && [ -x "$BASE/$name/start.sh" ]; then
-            "$BASE/$name/start.sh" >/dev/null 2>&1 &
+        if [ "$en" = "1" ]; then
+            nvram_enable_set "$name" 1
+            [ -x "$BASE/$name/start.sh" ] && "$BASE/$name/start.sh" >/dev/null 2>&1 &
+        else
+            nvram_enable_set "$name" 0
         fi
     done < "$STATE"
     cmd_list >/dev/null 2>&1
@@ -332,6 +356,7 @@ unregister_autostart(){
 
 cmd_start(){
     local name="$1" s="$BASE/$name/start.sh"
+    nvram_enable_set "$name" 1
     if [ -x "$s" ]; then "$s" >/dev/null 2>&1 & state_set "$name" 1 1; echo "OK: started $name"
     else # many plugins have no start script; just mark enabled
         state_set "$name" 1 1; echo "OK: enabled $name (no start script)"; fi
@@ -339,10 +364,11 @@ cmd_start(){
 cmd_stop(){
     local name="$1" s="$BASE/$name/stop.sh"
     [ -x "$s" ] && "$s" >/dev/null 2>&1
+    nvram_enable_set "$name" 0
     state_set "$name" 1 0; echo "OK: stopped $name"
 }
-cmd_enable(){ register_autostart "$1"; state_set "$1" 1 1; echo "OK: enabled $1"; }
-cmd_disable(){ unregister_autostart "$1"; state_set "$1" 1 0; echo "OK: disabled $1"; }
+cmd_enable(){ register_autostart "$1"; nvram_enable_set "$1" 1; state_set "$1" 1 1; echo "OK: enabled $1"; }
+cmd_disable(){ unregister_autostart "$1"; nvram_enable_set "$1" 0; state_set "$1" 1 0; echo "OK: disabled $1"; }
 cmd_status(){ [ -f "$STATE" ] && cat "$STATE" || echo "NONE"; }
 
 # 写插件配置：setcfg <name> key=value [key=value ...]

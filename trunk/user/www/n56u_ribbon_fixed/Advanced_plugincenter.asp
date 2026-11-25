@@ -28,9 +28,9 @@ var CATS = [["ad","广告管理"],["dns","DNS服务"],["proxy","科学上网"],[
             ["qos","QOS流控"],["misc","其他插件"]];
 var CAT_WORDS = {
     ad:     ["adbyby","adguard","adblock","nanoad","adg"],
-    dns:    ["smartdns","dnsmasq","mosdns","dnscrypt","stubby","chinadns","dns2tcp","dnsproxy","dnsforwarder","aliddns","pdnsd"],
+    dns:    ["smartdns","dnsmasq","mosdns","dnscrypt","stubby","chinadns","dns2tcp","dnsproxy","dnsforwarder","pdnsd"],
     proxy:  ["xray","v2ray","clash","trojan","shadowsocks","ssr","singbox","sing-box","redsocks","microsocks","srelay","ipt2socks","3proxy","obfs"],
-    tunnel: ["frp","zerotier","ddnsto","tailscale","wireguard","nps","ngrok","ptunnel"],
+    tunnel: ["frp","zerotier","ddnsto","tailscale","wireguard","aliddns","nps","ngrok","ptunnel"],
     nas:    ["alist","aliyun","aldriver","webdav","aria2","transmission","xupnpd","vsftpd","samba","ftp"],
     net:    ["iperf","socat","mtr","tcpdump","lrzsz","resolveip","lldt","msd_lite","nmap","inadyn","wol"],
     term:   ["ttyd","htop","nano","vim","shellinabox","webssh","telnet"],

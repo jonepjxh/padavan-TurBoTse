@@ -4295,12 +4295,12 @@ static const plugin_cat_t plugin_cats[] = {
 	{ "ad",     "广告管理",   { "adbyby", "adguard", "adblock", "nanoad", "adg" } },
 	{ "dns",    "DNS服务",    { "smartdns", "dnsmasq", "mosdns", "dnscrypt", "stubby",
 	                            "chinadns", "dns2tcp", "dnsproxy", "dnsforwarder",
-	                            "aliddns", "pdnsd" } },
+	                            "pdnsd" } },
 	{ "proxy",  "科学上网",   { "xray", "v2ray", "clash", "trojan", "shadowsocks",
 	                            "ssr", "singbox", "sing-box", "redsocks", "microsocks",
 	                            "srelay", "ipt2socks", "3proxy", "obfs" } },
 	{ "tunnel", "穿透服务",   { "frp", "zerotier", "ddnsto", "tailscale", "wireguard",
-	                            "nps", "ngrok", "ptunnel" } },
+	                            "aliddns", "nps", "ngrok", "ptunnel" } },
 	{ "nas",    "存储下载",   { "alist", "aliyun", "aldriver", "webdav", "aria2",
 	                            "transmission", "xupnpd", "vsftpd", "samba", "ftp",
 	                            "minidlna", "firefly", "dlna", "nfs" } },
@@ -4351,17 +4351,20 @@ plugin_js_string(FILE *fp, const char *s, int len)
 	fputc('"', fp);
 }
 
-/* page name: [A-Za-z0-9._/-] only, no absolute and no ".." segment */
+/* page name: relative to the plugin web/ dir ("index.html"), or an absolute
+ * firmware page for packages that ship no page of their own
+ * ("/Advanced_plugincfg.asp?p=aliddns").  Blanks, quotes, ".." segments and
+ * shell metacharacters are still refused. */
 static int
 plugin_page_ok(const char *page)
 {
 	const char *s;
 	size_t len;
 
-	if (!page || !*page || page[0] == '/')
+	if (!page || !*page)
 		return 0;
 	len = strlen(page);
-	if (len > 96)
+	if (len > 128)
 		return 0;
 
 	for (s = page; *s; s++) {
@@ -4369,7 +4372,8 @@ plugin_page_ok(const char *page)
 
 		if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
 		      (c >= 'A' && c <= 'Z') || c == '_' || c == '-' ||
-		      c == '.' || c == '/'))
+		      c == '.' || c == '/' || c == '?' || c == '=' ||
+		      c == '&' || c == '%' || c == ':'))
 			return 0;
 		if (c == '.' && s[1] == '.' &&
 		    (s == page || s[-1] == '/') && (s[2] == '/' || s[2] == '\0'))
@@ -4481,7 +4485,10 @@ plugin_menu_add(const char *pkg, const char *title, const char *page, const char
 	snprintf(it->pkg, sizeof(it->pkg), "%s", pkg);
 	memcpy(it->title, p, (size_t) n);
 	it->title[n] = '\0';
-	if (page && page[0])
+	if (page && page[0] == '/')
+		/* 以 / 开头 = 固件自带的页面（通用插件管理页），原样使用 */
+		snprintf(it->page, sizeof(it->page), "%s", page);
+	else if (page && page[0])
 		snprintf(it->page, sizeof(it->page), "/plugin/%s/%s", pkg, page);
 	else
 		/* 没有 web/ 页面的纯二进制插件（smartdns / ttyd / dogcom ...）：
@@ -4656,7 +4663,8 @@ plugin_menu_collect_pkg(const char *pkg)
 				plugin_menu_trim(cat);
 			}
 			plugin_menu_trim(page);
-			plugin_menu_add(pkg, line, page, cat);
+			/* 页面字段留空 = 使用固件内置的通用插件管理页 */
+			plugin_menu_add(pkg, line, *page ? page : NULL, cat);
 			added = 1;
 		}
 		fclose(fp);
@@ -4784,6 +4792,10 @@ plugin_menu_emit(FILE *stream)
 	fprintf(stream, "  pcIns(%d, ", PLUGIN_CENTER_L2);
 	plugin_js_string(stream, "插件中心", (int) strlen("插件中心"));
 	fprintf(stream, ", \"Advanced_plugincenter.asp\");\n");
+	/* 新建的空标签组里至少要有一个标签，否则点目录标题是空白页 */
+	fprintf(stream, "  pcG(%d); tabtitle[%d].push(", PLUGIN_CENTER_L2 - 1, PLUGIN_CENTER_L2 - 1);
+	plugin_js_string(stream, "插件中心", (int) strlen("插件中心"));
+	fprintf(stream, "); tablink[%d].push(\"Advanced_plugincenter.asp\");\n", PLUGIN_CENTER_L2 - 1);
 	fprintf(stream, "  /* 2) 分类目录：固件里已有同名目录（广告管理 / DNS服务 / 科学上网 / 穿透服务 ...）\n");
 	fprintf(stream, "        就直接复用，没有才在插件中心后面新建，避免左侧出现两个同名目录 */\n");
 	/* 先把「分类表」整体下发：先补建缺失的目录，再统一重新定位，
@@ -4803,8 +4815,10 @@ plugin_menu_emit(FILE *stream)
 	}
 	fprintf(stream, "\n  ];\n");
 	fprintf(stream, "  for (var pcJ = 0; pcJ < pcCats.length; pcJ++)\n");
-	fprintf(stream, "    if (pcFind(pcCats[pcJ][1]) < 0)\n");
-	fprintf(stream, "      pcIns(pcNext++, pcCats[pcJ][1], \"Advanced_plugincat.asp?c=\" + pcCats[pcJ][0]);\n");
+	fprintf(stream, "    if (pcFind(pcCats[pcJ][1]) < 0){\n");
+	fprintf(stream, "      var pt = pcCats[pcJ][1], pu = \"Advanced_plugincat.asp?c=\" + pcCats[pcJ][0];\n");
+	fprintf(stream, "      var pl2 = pcNext++; pcIns(pl2, pt, pu); pcG(pl2 - 1);\n");
+	fprintf(stream, "      tabtitle[pl2 - 1].push(pt); tablink[pl2 - 1].push(pu); }\n");
 	fprintf(stream, "  for (var pcJ = 0; pcJ < pcCats.length; pcJ++){\n");
 	fprintf(stream, "    var pcT = pcFind(pcCats[pcJ][1]);\n");
 	fprintf(stream, "    if (pcT > 0) pcL2[pcCats[pcJ][0]] = pcT; }\n");

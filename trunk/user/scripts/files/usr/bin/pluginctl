@@ -111,6 +111,15 @@ cmd_list(){
         # 不能给 awk 传空 state 文件——两文件模式下 FNR==NR 会恒为真，把 index 全部行吞掉。
         awk -F'|' 'NF>=4{printf "%s|%s|%s|%s|0|0|%s\n",$1,$2,$3,$4,(NF>=6?$6:"")}' "$INDEX" > "$VIEW"
     fi
+    # 分类列兜底：在线索引只有 5 列（没有 cat），这里按包名补一个，
+    # 让插件中心表格里的「分类」一栏和菜单归属保持一致。
+    : > "$VIEW.tmp"
+    while IFS='|' read -r vn vt vf vs vi ve vc; do
+        [ -n "$vn" ] || continue
+        [ -n "$vc" ] || vc=$(plugin_cat_of "$vn")
+        printf '%s|%s|%s|%s|%s|%s|%s\n' "$vn" "$vt" "$vf" "$vs" "$vi" "$ve" "$vc" >> "$VIEW.tmp"
+    done < "$VIEW"
+    mv "$VIEW.tmp" "$VIEW"
     cat "$VIEW"
 }
 
@@ -129,9 +138,9 @@ plugin_cat_of(){
     # 不会再出现「装了但左侧目录里找不到」的情况。
     case "$n" in
         *adbyby*|*adguard*|*adblock*|*nanoad*|*adg*)          echo ad ;;
-        *smartdns*|*dnsmasq*|*mosdns*|*dnscrypt*|*stubby*|*chinadns*|*dns2tcp*|*dnsproxy*|*dnsforwarder*|*aliddns*|*pdnsd*) echo dns ;;
+        *smartdns*|*dnsmasq*|*mosdns*|*dnscrypt*|*stubby*|*chinadns*|*dns2tcp*|*dnsproxy*|*dnsforwarder*|*pdnsd*) echo dns ;;
         *xray*|*v2ray*|*clash*|*trojan*|*shadowsocks*|*ssr*|*singbox*|*sing-box*|*redsocks*|*microsocks*|*srelay*|*ipt2socks*|*3proxy*|*obfs*) echo proxy ;;
-        *frp*|*zerotier*|*ddnsto*|*tailscale*|*wireguard*|*nps*|*ngrok*) echo tunnel ;;
+        *frp*|*zerotier*|*ddnsto*|*tailscale*|*wireguard*|*aliddns*|*nps*|*ngrok*) echo tunnel ;;
         *alist*|*aliyun*|*aldriver*|*webdav*|*aria2*|*transmission*|*xupnpd*|*vsftpd*|*samba*|*ftp*) echo nas ;;
         *iperf*|*socat*|*mtr*|*tcpdump*|*lrzsz*|*resolveip*|*lldt*|*msd_lite*|*nmap*|*inadyn*|*wol*) echo net ;;
         *ttyd*|*htop*|*nano*|*vim*|*shellinabox*|*webssh*|*telnet*) echo term ;;
@@ -208,7 +217,11 @@ cmd_install(){
     rm -f "$tmp"
     # symlink binaries into /opt/bin (in PATH). Prefer /opt/bin if writable, else /etc/storage/bin.
     local linkdir=/opt/bin
-    [ -d "$linkdir" ] || mkdir -p "$linkdir" 2>/dev/null
+    # /opt 在部分固件里是只读的或压根没挂载，退到 /etc/storage/bin（持久化）
+    if ! mkdir -p "$linkdir" 2>/dev/null || [ ! -w "$linkdir" ]; then
+        linkdir=/etc/storage/bin
+        mkdir -p "$linkdir" 2>/dev/null
+    fi
     : > "$dest/uninstall.links"
     for d in usr/bin usr/sbin bin sbin; do
         [ -d "$dest/$d" ] || continue

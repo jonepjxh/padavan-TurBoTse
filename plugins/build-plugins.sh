@@ -257,14 +257,43 @@ EOF
 fi
 
 log "== filemgr"
-# gohttpserver：内嵌前端资源的 Go 文件服务器（filebrowser 带前端后 14MB，24MB tmpfs 装不下）
+# gohttpserver：内嵌前端的 Go 文件服务器。它启动时会给 --root 建搜索索引，根目录给 / 会直接 OOM
+# （实测 24MB tmpfs + 50MB 空闲内存下报 fatal error: runtime: out of memory），所以默认挂 /mnt，可在插件设置里改。
 if V=$(fetch_src filemgr codeskyblue/gohttpserver master) && gobuild filemgr .; then
 	stage filemgr "文件管理" nas
 	cp "$WORK/bin/filemgr" "$ST/filemgr/usr/bin/gohttpserver"
-	gen_start filemgr '$B/usr/bin/gohttpserver --port 8088 --addr 0.0.0.0 --root / --upload --delete'
-	cat > "$ST/filemgr/webui.conf" <<'EOF'
-desc|说明|text|浏览器打开 http://192.168.8.1:8088 即可浏览/上传/下载/打包下载路由器文件（默认无密码，别把端口暴露到公网）
-EOF
+	cat > "$ST/filemgr/config" <<'CFG'
+ROOT=/mnt
+PORT=8088
+CFG
+	cat > "$ST/filemgr/start.sh" <<'SS'
+#!/bin/sh
+B=/etc/storage/plugins/filemgr
+H=/etc/storage/plugins/.home/filemgr
+P=$B/run.pid
+mkdir -p "$H"
+[ -f "$P" ] && kill "$(cat "$P")" 2>/dev/null
+[ -f "$B/config" ] && . "$B/config"
+[ -n "$ROOT" ] || ROOT=/mnt
+[ -n "$PORT" ] || PORT=8088
+cd "$H" || exit 1
+export HOME="$H" GOGC=25
+"$B/usr/bin/gohttpserver" --port "$PORT" --root "$ROOT" --upload --delete >>/tmp/filemgr.log 2>&1 &
+echo $! > "$P"
+SS
+	cat > "$ST/filemgr/stop.sh" <<'SS'
+#!/bin/sh
+B=/etc/storage/plugins/filemgr
+[ -f "$B/run.pid" ] && kill "$(cat "$B/run.pid")" 2>/dev/null
+killall gohttpserver 2>/dev/null
+rm -f "$B/run.pid"
+SS
+	chmod +x "$ST/filemgr/start.sh" "$ST/filemgr/stop.sh"
+	cat > "$ST/filemgr/webui.conf" <<'UI'
+ROOT|根目录|text|默认 /mnt（U盘/移动硬盘挂载点）。想浏览全部路由器文件改成 /，但目录太大时会吃满内存崩溃
+PORT|端口|text|默认 8088，浏览器打开 http://192.168.8.1:8088
+desc|说明|text|网页版文件管理：浏览/上传/下载/打包下载。默认没有密码，别把端口映射到公网
+UI
 	pack filemgr "文件管理" nas
 fi
 

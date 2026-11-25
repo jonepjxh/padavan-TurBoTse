@@ -208,7 +208,8 @@ cmd_install(){
     [ -n "$line" ] || { echo "ERR: plugin '$name' not found"; return 1; }
     local fname=$(echo "$line" | cut -d'|' -f3)
     local url="$RAW_BASE/$fname"
-    local tmp="$BASE/$fname.tmp"
+    # 包体先落到 /tmp（24MB），否则大插件会把 6MB 的 /etc tmpfs 写满
+    local tmp="/tmp/pluginctl-$fname"
     log "install $name <- $url"
     fetch "$url" "$tmp" || { log "download failed"; rm -f "$tmp"; return 1; }
     local dest="$BASE/$name"

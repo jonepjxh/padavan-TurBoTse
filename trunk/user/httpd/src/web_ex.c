@@ -1201,7 +1201,7 @@ plugin_restart_from_apply(webs_t wp)
 		if (access(path, R_OK))
 			return;
 		snprintf(cmd, sizeof(cmd),
-		         "/usr/bin/pluginctl restart %s >/dev/null 2>&1 &", map[i].pkg);
+		         "/usr/bin/pluginctl start %s >/dev/null 2>&1 &", map[i].pkg);
 		system(cmd);
 		return;
 	}

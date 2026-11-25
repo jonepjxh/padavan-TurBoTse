@@ -216,7 +216,7 @@ EOF
 fi
 
 log "== gotty"
-if V=$(fetch_src gotty sorenisanerd/gotty) && gobuild gotty .; then
+if V=$(fetch_src gotty sorenisanerd/gotty v2.1.2) && gobuild gotty .; then
 	stage gotty "GoTTY网页终端" term
 	cp "$WORK/bin/gotty" "$ST/gotty/usr/bin/gotty"
 	gen_start gotty '$B/usr/bin/gotty --port 7681 --permit-write --reconnect /bin/sh'
@@ -238,7 +238,7 @@ EOF
 fi
 
 log "== speedtest-go"
-if V=$(fetch_src speedtest-go showwin/speedtest-go) && gobuild speedtest-go .; then
+if V=$(fetch_src speedtest-go showwin/speedtest-go v1.8.3) && gobuild speedtest-go .; then
 	stage speedtest-go "网络测速(Speedtest)" net
 	cp "$WORK/bin/speedtest-go" "$ST/speedtest-go/usr/bin/speedtest-go"
 	cat > "$ST/speedtest-go/webui.conf" <<'EOF'

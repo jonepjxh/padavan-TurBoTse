@@ -4281,7 +4281,7 @@ static char mentohust_log_txt[] =
 #define PLUGIN_CAT_KEY_MAX		16
 #define PLUGIN_CFG_PAGE			"/Advanced_plugincfg.asp?p="	/* generic plugin page */
 
-#define PLUGIN_CAT_WORDS	12
+#define PLUGIN_CAT_WORDS	16
 
 typedef struct {
 	const char *key;			/* token written in menu.conf */
@@ -4302,7 +4302,8 @@ static const plugin_cat_t plugin_cats[] = {
 	{ "tunnel", "穿透服务",   { "frp", "zerotier", "ddnsto", "tailscale", "wireguard",
 	                            "nps", "ngrok", "ptunnel" } },
 	{ "nas",    "存储下载",   { "alist", "aliyun", "aldriver", "webdav", "aria2",
-	                            "transmission", "xupnpd", "vsftpd", "samba", "ftp" } },
+	                            "transmission", "xupnpd", "vsftpd", "samba", "ftp",
+	                            "minidlna", "firefly", "dlna", "nfs" } },
 	{ "net",    "网络工具",   { "iperf", "socat", "mtr", "tcpdump", "lrzsz",
 	                            "resolveip", "lldt", "msd_lite", "nmap", "inadyn",
 	                            "wol", "lan" } },

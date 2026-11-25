@@ -39,21 +39,16 @@ jobs:
           mkdir -p src
           tar -xzf padavan.tar.gz -C src --strip-components=1
 
-      - name: Apply Plugin Center overlay + Plugin WebUI (no NanoAd)
+      - name: Apply Plugin Center overlay
         run: |
-          # Generic plugin WebUI framework: baked settings page (Advanced_plugincfg.asp).
-          # NOTE: it also ships older web_ex.c / pluginctl / state.js / Advanced_plugincenter.asp,
-          # so it MUST be applied BEFORE plugincenter-overlay, otherwise the plugin-center
-          # changes get silently overwritten (regression seen in build 20261124-04:51).
-          curl -fL --retry 3 -o pc-webui-overlay.tar.gz \
-            "https://raw.githubusercontent.com/jonepjxh/padavan-TurBoTse/main/plugin-webui-overlay.tar.gz"
-          tar -xzf pc-webui-overlay.tar.gz -C src
-          echo "Plugin WebUI overlay applied (then overridden by plugincenter overlay)."
-          # plugincenter-overlay.tar.gz carries only the plugin-center pieces:
-          # web_ex.c hooks, pluginctl, CN.dict, Advanced_plugincenter.asp, state.js.
-          # Lite baseline keeps CONFIG_FIRMWARE_INCLUDE_ADBYBY=n, so no NanoAd is built.
+          # 上游 tarball 里没有插件中心，这里覆盖上本仓库的实现：
+          #   web_ex.c（state.js 菜单注入）、pluginctl（安装器）、
+          #   Advanced_plugincenter/plugincat/plugincfg.asp、CN.dict。
+          # ?v=${GITHUB_RUN_ID} 用于穿透 raw.githubusercontent 的 CDN 缓存，
+          # 否则可能拿到上一次构建时的旧 overlay。
           curl -fL --retry 3 -o pc-overlay.tar.gz \
-            https://raw.githubusercontent.com/jonepjxh/padavan-TurBoTse/main/plugincenter-overlay.tar.gz
+            "https://raw.githubusercontent.com/jonepjxh/padavan-TurBoTse/main/plugincenter-overlay.tar.gz?v=${GITHUB_RUN_ID}"
+          tar -tzf pc-overlay.tar.gz
           tar -xzf pc-overlay.tar.gz -C src
           echo "Plugin Center overlay applied."
 

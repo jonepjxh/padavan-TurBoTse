@@ -1,0 +1,337 @@
+#!/bin/sh
+# pluginctl - lightweight plugin center for Padavan (pure busybox shell, no python/jq)
+# Installs standalone plugin packages from a GitHub Release into /etc/storage/plugins.
+# All state lives under /etc/storage (persisted by mtd_storage.sh).
+
+BASE="${PLUGIN_BASE:-/etc/storage/plugins}"
+# 支持用环境变量 PLUGIN_REPO_MIRROR 覆盖下载源（如自建反代或本地目录）
+RAW_BASE="${PLUGIN_REPO_MIRROR:-https://github.com/jonepjxh/padavan-TurBoTse/releases/download/plugin-repo}"
+STATE="$BASE/.state"
+INDEX="$BASE/.index"
+VIEW="$BASE/.view.txt"
+
+mkdir -p "$BASE" 2>/dev/null
+
+log(){ logger -t pluginctl "$*"; echo "$*"; }
+
+usage(){
+    echo "pluginctl <cmd> [args]"
+    echo "  sync                 - refresh remote plugin index"
+    echo "  list                 - refresh merged view (index + state)"
+    echo "  install <name>       - download & install a plugin"
+    echo "  remove <name>        - uninstall a plugin"
+    echo "  enable <name>        - enable auto-start"
+    echo "  disable <name>       - disable auto-start"
+    echo "  start <name>         - run plugin start script"
+    echo "  stop <name>          - run plugin stop script"
+    echo "  menu                 - list plugin pages registered in the web menu"
+    echo "  setcfg <name> k=v..  - save plugin settings (webui.conf fields)"
+    echo "  status               - show installed/enabled state"
+}
+
+# 本版 busybox ash 中 command -v curl / command -v wget 恒返回失败（即便二进制存在），
+# 会导致三个候选地址全被跳过、sync 秒速假失败。改为显式路径可执行探测。
+CURL_BIN=""
+WGET_BIN=""
+BUSYBOX_BIN=""
+for c in /usr/bin/curl /bin/curl /usr/sbin/curl /opt/bin/curl /usr/local/bin/curl /mmc/usr/bin/curl; do [ -x "$c" ] && { CURL_BIN="$c"; break; }; done
+for w in /usr/bin/wget /bin/wget /usr/sbin/wget /opt/bin/wget /usr/local/bin/wget /mmc/usr/bin/wget; do [ -x "$w" ] && { WGET_BIN="$w"; break; }; done
+for b in /bin/busybox /usr/bin/busybox; do [ -x "$b" ] && { BUSYBOX_BIN="$b"; break; }; done
+# 最后兜底：固定路径都没有时再试 command -v（本版 busybox 可能失败，故不依赖它）
+if [ -z "$CURL_BIN" ]; then c="$(command -v curl 2>/dev/null)"; [ -n "$c" ] && [ -x "$c" ] && CURL_BIN="$c"; fi
+if [ -z "$WGET_BIN" ]; then w="$(command -v wget 2>/dev/null)"; [ -n "$w" ] && [ -x "$w" ] && WGET_BIN="$w"; fi
+
+# 依次尝试：gh-proxy.com -> 原始地址 -> ghproxy.net，任一成功即返回
+# 真机实测 GitHub release-assets 直连 443 超时（每条候选白等 10s），故镜像优先
+fetch(){
+    local url="$1" out="$2" cand
+    for cand in "https://gh-proxy.com/$url" "$url" "https://ghproxy.net/$url"; do
+        rm -f "$out"
+        if [ -n "$CURL_BIN" ]; then
+            "$CURL_BIN" -k -fL --retry 1 --connect-timeout 10 --max-time 90 -o "$out" "$cand" && [ -s "$out" ] && return 0
+        fi
+        if [ -n "$WGET_BIN" ]; then
+            "$WGET_BIN" --no-check-certificate -T 15 -t 1 -q -O "$out" "$cand" && [ -s "$out" ] && return 0
+        fi
+        if [ -n "$BUSYBOX_BIN" ]; then
+            "$BUSYBOX_BIN" wget --no-check-certificate -T 15 -t 1 -q -O "$out" "$cand" && [ -s "$out" ] && return 0
+        fi
+    done
+    rm -f "$out"
+    return 1
+}
+
+# ---- state helpers: TSV lines  name<TAB>installed(0/1)<TAB>enabled(0/1) ----
+state_get(){
+    local name="$1" field="$2"
+    [ -f "$STATE" ] || return 1
+    awk -F '\t' -v n="$name" -v f="$field" '$1==n{print $f; x=1} END{exit !x}' "$STATE"
+}
+state_set(){
+    local name="$1" inst="$2" en="$3"
+    local tmp="$BASE/.state.tmp"
+    # 没有 .state 时 awk 读不到文件会直接退出，END 分支不执行，导致状态写不进去
+    [ -f "$STATE" ] || : > "$STATE"
+    awk -F '\t' -v n="$name" -v i="$inst" -v e="$en" '
+        $1==n{printf "%s\t%s\t%s\n",n,i,e;x=1;next}{print}
+        END{if(!x) printf "%s\t%s\t%s\n",n,i,e}' "$STATE" 2>/dev/null > "$tmp"
+    mv "$tmp" "$STATE"
+}
+
+cmd_sync(){
+    mkdir -p "$BASE"
+    fetch "$RAW_BASE/plugins.txt" "$INDEX.tmp" || { log "sync failed: network"; return 1; }
+    [ -s "$INDEX.tmp" ] || { log "sync failed: empty index"; return 1; }
+    # keep only lines with 4 pipe fields
+    awk -F'|' 'NF>=4' "$INDEX.tmp" > "$INDEX"
+    rm -f "$INDEX.tmp"
+    cmd_list
+    log "sync ok: $(wc -l < "$INDEX") plugins"
+}
+
+# produce VIEW: name|title|file|size|installed|enabled
+cmd_list(){
+    [ -f "$INDEX" ] || { echo 'NO_INDEX'; return 1; }
+    if [ -s "$STATE" ]; then
+        awk -F'|' '
+            FNR==NR {
+                # state lines are TAB separated: name<TAB>installed<TAB>enabled
+                nf=split($0,a,"\t"); if(nf>=1) st[a[1]]=(nf>1?a[2]:"0")","(nf>2?a[3]:"0"); next
+            }
+            {
+                if (NF < 4) next;
+                name=$1; inst="0"; en="0";
+                if (name in st){ split(st[name],b,","); inst=b[1]; en=b[2] }
+                printf "%s|%s|%s|%s|%s|%s|%s\n", $1,$2,$3,$4,inst,en,(NF>=6?$6:"")
+            }
+        ' "$STATE" "$INDEX" > "$VIEW" || \
+            awk -F'|' 'NF>=4{printf "%s|%s|%s|%s|0|0|%s\n",$1,$2,$3,$4,(NF>=6?$6:"")}' "$INDEX" > "$VIEW"
+    else
+        # 全新设备没有 .state（或为空）：直接补 installed/enabled=0。
+        # 不能给 awk 传空 state 文件——两文件模式下 FNR==NR 会恒为真，把 index 全部行吞掉。
+        awk -F'|' 'NF>=4{printf "%s|%s|%s|%s|0|0|%s\n",$1,$2,$3,$4,(NF>=6?$6:"")}' "$INDEX" > "$VIEW"
+    fi
+    cat "$VIEW"
+}
+
+# ---- plugin web menu ----
+# 插件包内带 web/ 目录时，其中的页面由 httpd 以 /plugin/<name>/<页面> 暴露，
+# 左侧菜单由固件在 state.js 输出后自动注入（web_ex.c: do_js），
+# 这里只负责给没写 menu.conf 的插件补一份，插件作者也可以自带 menu.conf 覆盖。
+#
+# menu.conf 每行：菜单名|页面文件[|分类]
+# 分类取 proxy / ad / dns / tunnel / nas / qos 之一，固件按分类把菜单挂到
+# 「系统日志」之后对应的目录里（科学上网 / 广告管理 / DNS服务 / 穿透服务 ...）；
+# 留空则保持旧行为，出现在「高级设置」的插件中心旁。
+plugin_cat_of(){
+    local n=$(echo "$1" | tr 'A-Z' 'a-z')
+    # 顺序即优先级；最后一个 *) 兜底到 misc，保证任何插件都有归属目录，
+    # 不会再出现「装了但左侧目录里找不到」的情况。
+    case "$n" in
+        *adbyby*|*adguard*|*adblock*|*nanoad*|*adg*)          echo ad ;;
+        *smartdns*|*dnsmasq*|*mosdns*|*dnscrypt*|*stubby*|*chinadns*|*dns2tcp*|*dnsproxy*|*dnsforwarder*|*aliddns*|*pdnsd*) echo dns ;;
+        *xray*|*v2ray*|*clash*|*trojan*|*shadowsocks*|*ssr*|*singbox*|*sing-box*|*redsocks*|*microsocks*|*srelay*|*ipt2socks*|*3proxy*|*obfs*) echo proxy ;;
+        *frp*|*zerotier*|*ddnsto*|*tailscale*|*wireguard*|*nps*|*ngrok*) echo tunnel ;;
+        *alist*|*aliyun*|*aldriver*|*webdav*|*aria2*|*transmission*|*xupnpd*|*vsftpd*|*samba*|*ftp*) echo nas ;;
+        *iperf*|*socat*|*mtr*|*tcpdump*|*lrzsz*|*resolveip*|*lldt*|*msd_lite*|*nmap*|*inadyn*|*wol*) echo net ;;
+        *ttyd*|*htop*|*nano*|*vim*|*shellinabox*|*webssh*|*telnet*) echo term ;;
+        *mentohust*|*u2ec*|*scutclient*|*dogcom*|*drcom*|*minieap*|*gdut*) echo campus ;;
+        *qos*|*sqm*|*cake*)                                   echo qos ;;
+        *)                                                    echo misc ;;
+    esac
+}
+
+# 分类 token -> 固件左侧菜单里的目录名
+plugin_cat_name(){
+    case "$1" in
+        proxy)  echo "科学上网" ;;
+        ad)     echo "广告管理" ;;
+        dns)    echo "DNS服务" ;;
+        tunnel) echo "穿透服务" ;;
+        nas)    echo "存储下载" ;;
+        net)    echo "网络工具" ;;
+        term)   echo "终端运维" ;;
+        campus) echo "校园网认证" ;;
+        qos)    echo "QOS流控" ;;
+        *)      echo "其他插件" ;;
+    esac
+}
+
+# manifest.json 里的 "title"（插件中心显示名：网络测速 / 网页终端 / 网络工具），
+# 取不到就用包名，避免菜单里只看到英文包名
+plugin_title_of(){
+    local name="$1" t=""
+    [ -f "$BASE/$name/manifest.json" ] && \
+        t=$(sed -n 's/.*"title"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$BASE/$name/manifest.json" | head -1)
+    [ -n "$t" ] || t="$name"
+    echo "$t"
+}
+
+plugin_web_register(){
+    local name="$1" w="$BASE/$1/web" title page cat
+    [ -d "$w" ] || return 0
+    [ -f "$w/menu.conf" ] && return 0
+    # 后端页面：优先 index.asp，其次 index.html / index.htm（多数第三方插件只带 html）
+    if [ -f "$w/index.asp" ]; then
+        page="index.asp"
+    elif [ -f "$w/index.html" ]; then
+        page="index.html"
+    elif [ -f "$w/index.htm" ]; then
+        page="index.htm"
+    fi
+    [ -n "$page" ] || return 0
+    title=""
+    [ -f "$INDEX" ] && title=$(awk -F'|' -v n="$name" '$1==n{print $2; exit}' "$INDEX")
+    [ -n "$title" ] || title="$name"
+    cat=""
+    [ -f "$INDEX" ] && cat=$(awk -F'|' -v n="$name" 'NF>=6 && $1==n{print $6; exit}' "$INDEX")
+    [ -n "$cat" ] || cat=$(plugin_cat_of "$name")
+    printf '%s|%s|%s\n' "$title" "$page" "$cat" > "$w/menu.conf"
+    log "menu registered: $title -> /plugin/$name/$page ${cat:+[$cat]}"
+}
+
+cmd_install(){
+    local name="$1"
+    [ -n "$name" ] || { echo "ERR: no plugin name"; return 1; }
+    [ -f "$INDEX" ] || cmd_sync >/dev/null 2>&1
+    [ -f "$INDEX" ] || { echo "ERR: no index, run sync first"; return 1; }
+    local line=$(awk -F'|' -v n="$name" '$1==n{print;exit}' "$INDEX")
+    [ -n "$line" ] || { echo "ERR: plugin '$name' not found"; return 1; }
+    local fname=$(echo "$line" | cut -d'|' -f3)
+    local url="$RAW_BASE/$fname"
+    local tmp="$BASE/$fname.tmp"
+    log "install $name <- $url"
+    fetch "$url" "$tmp" || { log "download failed"; rm -f "$tmp"; return 1; }
+    local dest="$BASE/$name"
+    rm -rf "$dest"; mkdir -p "$dest"
+    tar -xzf "$tmp" -C "$dest" || { log "extract failed"; rm -f "$tmp"; return 1; }
+    rm -f "$tmp"
+    # symlink binaries into /opt/bin (in PATH). Prefer /opt/bin if writable, else /etc/storage/bin.
+    local linkdir=/opt/bin
+    [ -d "$linkdir" ] || mkdir -p "$linkdir" 2>/dev/null
+    for d in usr/bin usr/sbin bin sbin; do
+        [ -d "$dest/$d" ] || continue
+        for f in "$dest/$d"/*; do
+            [ -f "$f" ] && [ -x "$f" ] || continue
+            ln -sf "$f" "$linkdir/$(basename "$f")" 2>/dev/null
+        done
+    done
+    state_set "$name" 1 0
+    [ -x "$dest/install.sh" ] && "$dest/install.sh" >/dev/null 2>&1
+    plugin_web_register "$name"
+    cmd_list >/dev/null 2>&1
+    log "installed $name"; echo "OK: installed $name"
+}
+
+cmd_remove(){
+    local name="$1"
+    [ -n "$name" ] || { echo "ERR: no plugin name"; return 1; }
+    local dest="$BASE/$name"
+    [ -x "$dest/uninstall.sh" ] && "$dest/uninstall.sh" >/dev/null 2>&1
+    unregister_autostart "$name"
+    [ -f "$dest/uninstall.links" ] && while read -r l; do rm -f "/opt/bin/$l" 2>/dev/null; done < "$dest/uninstall.links"
+    rm -rf "$dest"
+    state_set "$name" 0 0
+    cmd_list >/dev/null 2>&1
+    log "removed $name"; echo "OK: removed $name"
+}
+
+AUTOSTART=/etc/storage/plugin_autostart.sh
+
+register_autostart(){
+    local name="$1"
+    [ -f "$AUTOSTART" ] || printf '#!/bin/sh\n# plugin center autostart (managed by pluginctl)\n' > "$AUTOSTART"
+    grep -q "# pc:$name" "$AUTOSTART" 2>/dev/null || \
+        echo "[ -x $BASE/$name/start.sh ] && $BASE/$name/start.sh >/dev/null 2>&1 & # pc:$name" >> "$AUTOSTART"
+    chmod 755 "$AUTOSTART" 2>/dev/null
+    local s=/etc/storage/started_script.sh
+    [ -f "$s" ] || return 0
+    grep -q 'plugin_autostart.sh' "$s" 2>/dev/null || \
+        echo '[ -x /etc/storage/plugin_autostart.sh ] && /etc/storage/plugin_autostart.sh' >> "$s"
+}
+unregister_autostart(){
+    local name="$1"
+    [ -f "$AUTOSTART" ] && sed -i "/# pc:$name/d" "$AUTOSTART"
+}
+
+cmd_start(){
+    local name="$1" s="$BASE/$name/start.sh"
+    if [ -x "$s" ]; then "$s" >/dev/null 2>&1 & state_set "$name" 1 1; echo "OK: started $name"
+    else # many plugins have no start script; just mark enabled
+        state_set "$name" 1 1; echo "OK: enabled $name (no start script)"; fi
+}
+cmd_stop(){
+    local name="$1" s="$BASE/$name/stop.sh"
+    [ -x "$s" ] && "$s" >/dev/null 2>&1
+    state_set "$name" 1 0; echo "OK: stopped $name"
+}
+cmd_enable(){ register_autostart "$1"; state_set "$1" 1 1; echo "OK: enabled $1"; }
+cmd_disable(){ unregister_autostart "$1"; state_set "$1" 1 0; echo "OK: disabled $1"; }
+cmd_status(){ [ -f "$STATE" ] && cat "$STATE" || echo "NONE"; }
+
+# 写插件配置：setcfg <name> key=value [key=value ...]
+# 供 Advanced_plugincfg.asp 的 webui.conf 表单提交，写入 <pkg>/config（key=value 逐行）
+cmd_setcfg(){
+    local name="$1"; shift
+    [ -n "$name" ] || { echo "ERR: no plugin name"; return 1; }
+    [ -d "$BASE/$name" ] || { echo "ERR: $name not installed"; return 1; }
+    local f="$BASE/$name/config" tmp="$BASE/$name/.config.new" kv k v
+    for kv in "$@"; do
+        k=$(printf '%s' "${kv%%=*}" | tr -cd 'A-Za-z0-9_.')
+        v=${kv#*=}
+        [ -n "$k" ] || continue
+        if [ -f "$f" ] && grep -q "^$k=" "$f" 2>/dev/null; then
+            awk -v k="$k" -v v="$v" '{ if (index($0, k"=") == 1) print k"="v; else print }' "$f" > "$tmp" && mv "$tmp" "$f"
+        else
+            printf '%s=%s\n' "$k" "$v" >> "$f"
+        fi
+    done
+    chmod 644 "$f" 2>/dev/null
+    echo "OK: saved $name config"
+}
+
+# 列出会出现在菜单里的插件页面：name<TAB>菜单名<TAB>URL<TAB>分类<TAB>分类名
+cmd_menu(){
+    local p name page found=0 cat gname title
+    for p in "$BASE"/*; do
+        [ -d "$p" ] || continue
+        name=$(basename "$p")
+        if [ ! -d "$p/web" ]; then
+            # 纯二进制插件（没有 web/ 页面）：统一给固件内置的通用管理页，
+            # 该页能看状态、启停、开关自启，插件带 webui.conf 时还能改配置。
+            if [ -f "$p/manifest.json" ]; then
+                cat=$(plugin_cat_of "$name")
+                gname=$(plugin_cat_name "$cat")
+                title=$(plugin_title_of "$name")
+                printf '%s\t%s\t/Advanced_plugincfg.asp?p=%s\t%s\t%s\n' \
+                    "$name" "$title" "$name" "$cat" "$gname"
+                found=1
+            fi
+            continue
+        fi
+        if [ -f "$p/web/menu.conf" ]; then
+            cat=$(awk -F'|' 'NF>=3{print $3; exit}' "$p/web/menu.conf")
+            [ -n "$cat" ] || cat=$(plugin_cat_of "$name")
+            gname=$(plugin_cat_name "$cat")
+            awk -F'|' -v n="$name" -v g="$cat" -v gn="$gname" \
+                'NF>=2{printf "%s\t%s\t/plugin/%s/%s\t%s\t%s\n", n, $1, n, $2, g, gn}' "$p/web/menu.conf"
+            found=1
+        elif [ -f "$p/web/index.asp" ] || [ -f "$p/web/index.html" ] || [ -f "$p/web/index.htm" ]; then
+            page="index.asp"
+            [ -f "$p/web/index.asp" ] || { page="index.html"; [ -f "$p/web/index.html" ] || page="index.htm"; }
+            cat=$(plugin_cat_of "$name")
+            gname=$(plugin_cat_name "$cat")
+            title=$(plugin_title_of "$name")
+            printf '%s\t%s\t/plugin/%s/%s\t%s\t%s\n' "$name" "$title" "$name" "$page" "$cat" "$gname"
+            found=1
+        fi
+    done
+    [ "$found" = 1 ] || echo "NO_WEB_MENU"
+}
+
+case "$1" in
+    sync) cmd_sync ;; list) cmd_list ;; install) cmd_install "$2" ;; remove) cmd_remove "$2" ;;
+    enable) cmd_enable "$2" ;; disable) cmd_disable "$2" ;; start) cmd_start "$2" ;;
+    stop) cmd_stop "$2" ;; menu) cmd_menu ;; status) cmd_status ;;
+    setcfg) shift; cmd_setcfg "$@" ;; *) usage ;;
+esac

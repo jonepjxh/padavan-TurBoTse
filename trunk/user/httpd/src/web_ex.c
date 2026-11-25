@@ -4253,23 +4253,81 @@ static char mentohust_log_txt[] =
  *
  * Every plugin is extracted to /etc/storage/plugins/<pkg>/ and may carry a
  * web/ directory with its own pages.  The left menu of the web UI is driven
- * purely by state.js (tabtitle[] / tablink[]), so instead of patching the
- * read-only squashfs or restarting httpd we append a few .push() lines right
- * after state.js has been rendered.  Menu entry and page then appear as soon
- * as the plugin directory exists, and vanish on uninstall.
+ * purely by state.js (menuL2_title[] / tabtitle[] / tablink[]), so instead of
+ * patching the read-only squashfs or restarting httpd we append a few lines
+ * right after state.js has been rendered.  Menu entry and page then appear as
+ * soon as the plugin directory exists, and vanish on uninstall.
  *
  * Plugin contract (all optional):
- *   web/menu.conf   one entry per line:  <menu title>|<page file>
+ *   web/menu.conf   one entry per line:  <menu title>|<page file>[|<category>]
  *   web/index.asp   fallback page, used with the package name as title
  * Pages are served through /plugin/<pkg>/<page> (see plugin_web_path()).
+ *
+ * A plugin without a category keeps the old behaviour and lands next to the
+ * plugin center (advanced settings tabs).  With a category it is grouped into
+ * the matching menu that already sits below "system log" (ad blocking, DNS,
+ * tunnel, proxy ...); when that group is empty in this firmware build it is
+ * enabled on the fly and points at Advanced_plugincat.asp.
  * ------------------------------------------------------------------------ */
 #define PLUGIN_STORE_DIR		"/etc/storage/plugins"
 #define PLUGIN_WEB_DIR			"web"
 #define PLUGIN_MENU_CONF		"menu.conf"
 #define PLUGIN_DEFAULT_PAGE		"index.asp"
 #define PLUGIN_MENU_TAB			6	/* tabtitle[6] / tablink[6] == advanced settings */
+#define PLUGIN_CENTER_L2		11	/* 「插件中心」插在「系统日志」(menuL2[10]) 之后 */
+#define PLUGIN_CAT_L2_BASE		12	/* 分类目录顺延到「插件中心」之后 */
 #define PLUGIN_MENU_NAME_MAX	64
 #define PLUGIN_MENU_MAX			32
+#define PLUGIN_CAT_KEY_MAX		16
+#define PLUGIN_CFG_PAGE			"/Advanced_plugincfg.asp?p="	/* generic plugin page */
+
+#define PLUGIN_CAT_WORDS	12
+
+typedef struct {
+	const char *key;			/* token written in menu.conf */
+	const char *title;			/* menu title used when the group is empty */
+	const char *words[PLUGIN_CAT_WORDS];	/* name hints for packages without a category */
+} plugin_cat_t;
+
+/* order = guess priority, keep the keys lowercase；
+ * 目录在菜单里的位置由 emit 时动态分配：位置1..N 紧跟「系统日志」 */
+static const plugin_cat_t plugin_cats[] = {
+	{ "ad",     "广告管理",   { "adbyby", "adguard", "adblock", "nanoad", "adg" } },
+	{ "dns",    "DNS服务",    { "smartdns", "dnsmasq", "mosdns", "dnscrypt", "stubby",
+	                            "chinadns", "dns2tcp", "dnsproxy", "dnsforwarder",
+	                            "aliddns", "pdnsd" } },
+	{ "proxy",  "科学上网",   { "xray", "v2ray", "clash", "trojan", "shadowsocks",
+	                            "ssr", "singbox", "sing-box", "redsocks", "microsocks",
+	                            "srelay", "ipt2socks", "3proxy", "obfs" } },
+	{ "tunnel", "穿透服务",   { "frp", "zerotier", "ddnsto", "tailscale", "wireguard",
+	                            "nps", "ngrok", "ptunnel" } },
+	{ "nas",    "存储下载",   { "alist", "aliyun", "aldriver", "webdav", "aria2",
+	                            "transmission", "xupnpd", "vsftpd", "samba", "ftp" } },
+	{ "net",    "网络工具",   { "iperf", "socat", "mtr", "tcpdump", "lrzsz",
+	                            "resolveip", "lldt", "msd_lite", "nmap", "inadyn",
+	                            "wol", "lan" } },
+	{ "term",   "终端运维",   { "ttyd", "htop", "nano", "vim", "shellinabox",
+	                            "webssh", "telnet" } },
+	{ "campus", "校园网认证", { "mentohust", "u2ec", "scutclient", "dogcom", "drcom",
+	                            "minieap", "minieap", "gdut" } },
+	{ "qos",    "QOS流控",    { "qos", "sqm", "cake" } },
+	/* 兜底目录：任何没被上面关键字命中的插件都归到这里，
+	 * 保证装完插件就一定能在左侧目录里看到入口（不再是「高级设置」里的散项）。
+	 * 必须放在数组最后一个，plugin_cat_guess() 直接返回 PLUGIN_CAT_COUNT - 1。 */
+	{ "misc",   "其他插件",   { NULL } },
+};
+
+#define PLUGIN_CAT_COUNT	((int) (sizeof(plugin_cats) / sizeof(plugin_cats[0])))
+
+typedef struct {
+	char pkg[PLUGIN_MENU_NAME_MAX + 1];
+	char title[PLUGIN_MENU_NAME_MAX + 1];
+	char page[192];
+	int cat;					/* index into plugin_cats, -1 == unclassified */
+} plugin_menu_item_t;
+
+static plugin_menu_item_t plugin_menu_items[PLUGIN_MENU_MAX];
+static int plugin_menu_count;
 
 static void
 plugin_js_string(FILE *fp, const char *s, int len)
@@ -4321,14 +4379,82 @@ plugin_page_ok(const char *page)
 }
 
 static void
-plugin_menu_add(FILE *stream, const char *pkg, const char *title, const char *page)
+plugin_lc(char *dst, size_t size, const char *src)
 {
-	char title_buf[PLUGIN_MENU_NAME_MAX + 1];
-	char page_buf[192];
-	const char *p = title;
-	int n;
+	size_t i;
 
-	if (!plugin_page_ok(page))
+	if (size == 0)
+		return;
+	for (i = 0; i + 1 < size && src[i]; i++) {
+		char c = src[i];
+
+		if (c >= 'A' && c <= 'Z')
+			c = (char) (c - 'A' + 'a');
+		dst[i] = c;
+	}
+	dst[i] = '\0';
+}
+
+/* category index for the token found in menu.conf, -1 when unknown */
+static int
+plugin_cat_by_key(const char *token)
+{
+	char key[PLUGIN_CAT_KEY_MAX + 1];
+	int i;
+
+	if (!token || !*token)
+		return -1;
+
+	plugin_lc(key, sizeof(key), token);
+	for (i = 0; i < PLUGIN_CAT_COUNT; i++) {
+		if (strcmp(plugin_cats[i].key, key) == 0)
+			return i;
+		if (strcmp(plugin_cats[i].title, token) == 0)
+			return i;
+	}
+
+	return -1;
+}
+
+/* best effort category for legacy packages that never declared one */
+static int
+plugin_cat_guess(const char *pkg, const char *title)
+{
+	char buf[PLUGIN_MENU_NAME_MAX + 1];
+	const char *src[2];
+	int i, j, k;
+
+	src[0] = pkg;
+	src[1] = title;
+
+	for (k = 0; k < 2; k++) {
+		if (!src[k] || !*src[k])
+			continue;
+		plugin_lc(buf, sizeof(buf), src[k]);
+		for (i = 0; i < PLUGIN_CAT_COUNT; i++) {
+			for (j = 0; j < PLUGIN_CAT_WORDS; j++) {
+				if (!plugin_cats[i].words[j])
+					break;
+				if (strstr(buf, plugin_cats[i].words[j]))
+					return i;
+			}
+		}
+	}
+
+	/* 兜底：一律归入最后一个「其他插件」目录，绝不留给「高级设置」散项 */
+	return PLUGIN_CAT_COUNT - 1;
+}
+
+static void
+plugin_menu_add(const char *pkg, const char *title, const char *page, const char *cat)
+{
+	plugin_menu_item_t *it;
+	const char *p = title;
+	int n, idx;
+
+	/* page == NULL：纯二进制插件（没有 web/ 目录），只登记分类与名字，
+	 * 让「高级设置」下的分类目录里也能看到它，点进去说明没有管理页。 */
+	if ((page && !plugin_page_ok(page)) || plugin_menu_count >= PLUGIN_MENU_MAX)
 		return;
 
 	while (*p == ' ' || *p == '\t')
@@ -4348,20 +4474,161 @@ plugin_menu_add(FILE *stream, const char *pkg, const char *title, const char *pa
 		while (n > 0 && (((unsigned char) p[n]) & 0xc0) == 0x80)
 			n--;
 	}
-	memcpy(title_buf, p, (size_t) n);
-	title_buf[n] = '\0';
 
-	snprintf(page_buf, sizeof(page_buf), "/plugin/%s/%s", pkg, page);
+	it = &plugin_menu_items[plugin_menu_count];
+	memset(it, 0, sizeof(*it));
+	snprintf(it->pkg, sizeof(it->pkg), "%s", pkg);
+	memcpy(it->title, p, (size_t) n);
+	it->title[n] = '\0';
+	if (page && page[0])
+		snprintf(it->page, sizeof(it->page), "/plugin/%s/%s", pkg, page);
+	else
+		/* 没有 web/ 页面的纯二进制插件（smartdns / ttyd / dogcom ...）：
+		 * 菜单项统一指向固件内置的通用插件管理页，那里能看状态、启停、
+		 * 开关自启，插件自带 webui.conf 时还能直接改配置。
+		 * 这样独立安装的插件和编进固件里的插件一样有管理入口。 */
+		snprintf(it->page, sizeof(it->page), "%s%s", PLUGIN_CFG_PAGE, pkg);
 
-	fprintf(stream, "  tabtitle[%d].push(", PLUGIN_MENU_TAB);
-	plugin_js_string(stream, title_buf, (int) strlen(title_buf));
-	fprintf(stream, "); tablink[%d].push(", PLUGIN_MENU_TAB);
-	plugin_js_string(stream, page_buf, (int) strlen(page_buf));
-	fprintf(stream, ");\n");
+	idx = plugin_cat_by_key(cat);
+	if (idx < 0)
+		idx = plugin_cat_guess(pkg, it->title);
+	it->cat = idx;
+
+	plugin_menu_count++;
+}
+
+/* trim trailing blanks of one menu.conf field */
+static void
+plugin_menu_trim(char *s)
+{
+	char *tail = s + strlen(s);
+
+	while (tail > s && (tail[-1] == '\r' || tail[-1] == '\n' ||
+	                    tail[-1] == ' ' || tail[-1] == '\t'))
+		*--tail = '\0';
+}
+
+/* web/ 目录里任意 .asp/.html/.htm 页面（字典序最小者）。
+ * 有些独立编译的插件包不带 menu.conf、首页也不叫 index.*（例如
+ * htmldir/ 或自定义名），旧实现会直接判定它没有页面，菜单里就没有入口。
+ * 这里补一层兜底扫描，保证「有页面就一定挂得上菜单」。 */
+static int
+plugin_first_page(const char *pkg, char *out, size_t outlen)
+{
+	static const char *const exts[] = { ".asp", ".html", ".htm" };
+	char dir[256], best[128], name[128], tail[8];
+	struct dirent *de;
+	size_t nl, el, t;
+	int i, found = 0;
+	DIR *d;
+
+	if (outlen == 0)
+		return 0;
+	out[0] = '\0';
+
+	snprintf(dir, sizeof(dir), "%s/%s/%s", PLUGIN_STORE_DIR, pkg, PLUGIN_WEB_DIR);
+	d = opendir(dir);
+	if (!d)
+		return 0;
+
+	while ((de = readdir(d)) != NULL) {
+		if (de->d_name[0] == '.')
+			continue;
+		nl = strlen(de->d_name);
+		if (nl < 5 || nl >= sizeof(name))
+			continue;
+		for (i = 0; i < 3; i++) {
+			el = strlen(exts[i]);
+			if (nl <= el)
+				continue;
+			for (t = 0; t < el; t++) {
+				char c = de->d_name[nl - el + t];
+
+				if (c >= 'A' && c <= 'Z')
+					c = (char) (c - 'A' + 'a');
+				tail[t] = c;
+			}
+			tail[el] = '\0';
+			if (strcmp(tail, exts[i]) != 0)
+				continue;
+			if (!found || strcmp(de->d_name, best) < 0) {
+				snprintf(best, sizeof(best), "%s", de->d_name);
+				found = 1;
+			}
+			break;
+		}
+	}
+	closedir(d);
+
+	if (found && plugin_page_ok(best)) {
+		snprintf(out, outlen, "%s", best);
+		return 1;
+	}
+
+	return 0;
+}
+
+/* manifest.json 里的 "title"：插件中心显示的插件名（网络测速 / 网页终端 / 网络工具…）。
+ * 以前纯二进制插件的菜单名直接写包名，装完只看到 iperf3 / socat 这种英文名，
+ * 和插件中心里的中文标题对不上，这里补上。取不到就回退到包名。 */
+static void
+plugin_manifest_title(const char *pkg, char *out, size_t outlen)
+{
+	char path[256];
+	char buf[1024];
+	char tmp[PLUGIN_MENU_NAME_MAX * 2 + 1];
+	char *p, *q;
+	FILE *fp;
+	size_t n, i, j = 0;
+
+	if (outlen == 0)
+		return;
+	out[0] = '\0';
+
+	snprintf(path, sizeof(path), "%s/%s/manifest.json", PLUGIN_STORE_DIR, pkg);
+	fp = fopen(path, "r");
+	if (!fp)
+		return;
+	n = fread(buf, 1, sizeof(buf) - 1, fp);
+	fclose(fp);
+	buf[n] = '\0';
+
+	p = strstr(buf, "\"title\"");
+	if (!p)
+		return;
+	p = strchr(p + 7, ':');
+	if (!p)
+		return;
+	p++;
+	while (*p == ' ' || *p == '\t')
+		p++;
+	if (*p != '"')
+		return;
+	p++;
+	q = strchr(p, '"');
+	if (!q)
+		return;
+
+	n = (size_t) (q - p);
+	for (i = 0; i < n && j + 1 < sizeof(tmp); i++) {
+		if (p[i] == '\\' && i + 1 < n) {
+			i++;
+			tmp[j++] = p[i];
+		} else if (p[i] != '\n' && p[i] != '\r')
+			tmp[j++] = p[i];
+	}
+	tmp[j] = '\0';
+	if (j > outlen - 1) {
+		j = outlen - 1;
+		while (j > 0 && (((unsigned char) tmp[j]) & 0xc0) == 0x80)
+			j--;
+	}
+	memcpy(out, tmp, j);
+	out[j] = '\0';
 }
 
 static void
-plugin_menu_emit_pkg(FILE *stream, const char *pkg)
+plugin_menu_collect_pkg(const char *pkg)
 {
 	char conf[256];
 	char line[256];
@@ -4375,17 +4642,20 @@ plugin_menu_emit_pkg(FILE *stream, const char *pkg)
 		while (fgets(line, sizeof(line), fp)) {
 			char *bar = strchr(line, '|');
 			char *page;
-			char *tail;
+			char *cat = NULL;
 
 			if (!bar)
 				continue;
 			*bar = '\0';
 			page = bar + 1;
-			tail = page + strlen(page);
-			while (tail > page && (tail[-1] == '\r' || tail[-1] == '\n' ||
-			                       tail[-1] == ' ' || tail[-1] == '\t'))
-				*--tail = '\0';
-			plugin_menu_add(stream, pkg, line, page);
+			bar = strchr(page, '|');
+			if (bar) {
+				*bar = '\0';
+				cat = bar + 1;
+				plugin_menu_trim(cat);
+			}
+			plugin_menu_trim(page);
+			plugin_menu_add(pkg, line, page, cat);
 			added = 1;
 		}
 		fclose(fp);
@@ -4397,14 +4667,41 @@ plugin_menu_emit_pkg(FILE *stream, const char *pkg)
 		static const char *const def_pages[] = {
 			PLUGIN_DEFAULT_PAGE, "index.html", "index.htm"
 		};
+		char mtitle[PLUGIN_MENU_NAME_MAX + 1];
+		const char *shown;
 		size_t i;
+
+		plugin_manifest_title(pkg, mtitle, sizeof(mtitle));
+		shown = mtitle[0] ? mtitle : pkg;
 
 		for (i = 0; i < sizeof(def_pages) / sizeof(def_pages[0]); i++) {
 			snprintf(conf, sizeof(conf), "%s/%s/%s/%s",
 				PLUGIN_STORE_DIR, pkg, PLUGIN_WEB_DIR, def_pages[i]);
 			if (access(conf, R_OK) == 0) {
-				plugin_menu_add(stream, pkg, pkg, def_pages[i]);
+				plugin_menu_add(pkg, shown, def_pages[i], NULL);
 				break;
+			}
+		}
+		if (i >= sizeof(def_pages) / sizeof(def_pages[0])) {
+			char page[128];
+
+			/* 再兜底一次：web/ 里任意名字的 .asp/.html/.htm 页面 */
+			if (plugin_first_page(pkg, page, sizeof(page))) {
+				plugin_menu_add(pkg, shown, page, NULL);
+			} else {
+				/* 没有 web/ 页面的纯二进制插件（如 smartdns）：仍然登记到
+				 * 分类目录，菜单项指向固件内置的通用插件管理页。
+				 * manifest.json 用来认定它是插件。 */
+				snprintf(conf, sizeof(conf), "%s/%s/manifest.json",
+					PLUGIN_STORE_DIR, pkg);
+				if (access(conf, R_OK) == 0) {
+					/* 直接给分类目录一个「管理/设置」入口：
+					 * 点开「网络工具」就能看到 网络测速 / 网络工具 本体，
+					 * 不必先进分类汇总页再点一次。 */
+					snprintf(page, sizeof(page), "%s%s",
+						PLUGIN_CFG_PAGE, pkg);
+					plugin_menu_add(pkg, shown, page, NULL);
+				}
 			}
 		}
 	}
@@ -4421,7 +4718,8 @@ plugin_menu_emit(FILE *stream)
 	DIR *dir;
 	size_t len;
 	int count = 0;
-	int i, j;
+	int i, j, first = 1;
+	plugin_menu_item_t *it;
 
 	dir = opendir(PLUGIN_STORE_DIR);
 	if (!dir)
@@ -4435,17 +4733,19 @@ plugin_menu_emit(FILE *stream)
 			continue;
 		snprintf(full, sizeof(full), "%s/%s/%s",
 			PLUGIN_STORE_DIR, de->d_name, PLUGIN_WEB_DIR);
-		if (stat(full, &st) != 0 || !S_ISDIR(st.st_mode))
-			continue;
+		if (stat(full, &st) != 0 || !S_ISDIR(st.st_mode)) {
+			/* 纯二进制插件没有 web/，只要有 manifest.json 一样纳入分类 */
+			snprintf(full, sizeof(full), "%s/%s/manifest.json",
+				PLUGIN_STORE_DIR, de->d_name);
+			if (access(full, R_OK) != 0)
+				continue;
+		}
 		if (count >= PLUGIN_MENU_MAX)
 			break;
 		strcpy(names[count], de->d_name);
 		count++;
 	}
 	closedir(dir);
-
-	if (count == 0)
-		return;
 
 	/* insertion sort: keep the menu order stable across page loads */
 	for (i = 1; i < count; i++) {
@@ -4455,13 +4755,105 @@ plugin_menu_emit(FILE *stream)
 		strcpy(names[j + 1], tmp);
 	}
 
-	fprintf(stream, "\n/* plugin center: dynamic menu (generated) */\n");
-	fprintf(stream, "if (typeof tabtitle != 'undefined' && tablink[%d] && tabtitle[%d]"
-	                " && tablink[%d].push && tabtitle[%d].push) {\n",
-	                PLUGIN_MENU_TAB, PLUGIN_MENU_TAB, PLUGIN_MENU_TAB, PLUGIN_MENU_TAB);
+	plugin_menu_count = 0;
 	for (i = 0; i < count; i++)
-		plugin_menu_emit_pkg(stream, names[i]);
-	fprintf(stream, "}\n/* plugin center: dynamic menu end */\n");
+		plugin_menu_collect_pkg(names[i]);
+
+	/* 即使一个插件都没装也要注入：「插件中心」入口本身也要插到「系统日志」之后 */
+	fprintf(stream, "\n/* plugin center: dynamic menu (generated) */\n");
+	fprintf(stream, "(function(){\n");
+	fprintf(stream, "  if (typeof tabtitle == 'undefined' || typeof tablink == 'undefined') return;\n");
+	fprintf(stream, "  function pcG(i){ if(!tabtitle[i] || !tabtitle[i].push) tabtitle[i] = new Array(\"\");\n");
+	fprintf(stream, "                   if(!tablink[i] || !tablink[i].push) tablink[i] = new Array(\"\"); }\n");
+	fprintf(stream, "  /* menuL2[n] 与 tabtitle[n-1] 是一对，插入目录时两侧一起后移 */\n");
+	fprintf(stream, "  function pcIns(l2,t,u){ if(typeof menuL2_title != 'undefined' && typeof menuL2_link != 'undefined'){\n");
+	fprintf(stream, "        menuL2_title.splice(l2,0,t); menuL2_link.splice(l2,0,u); }\n");
+	fprintf(stream, "        tabtitle.splice(l2-1,0,new Array(\"\")); tablink.splice(l2-1,0,new Array(\"\")); pcG(l2-1); }\n");
+	fprintf(stream, "  function pcFind(t){ if(typeof menuL2_title == 'undefined') return -1;\n");
+	fprintf(stream, "        for(var k=1;k<menuL2_title.length;k++){ if(menuL2_title[k]==t) return k; } return -1; }\n");
+	fprintf(stream, "  var pcL2 = {\"center\":%d}, pcNext = %d;\n", PLUGIN_CENTER_L2, PLUGIN_CAT_L2_BASE);
+	fprintf(stream, "  /* 旧版 state.js 把「插件中心」当成「高级设置」的标签页，先摘掉 */\n");
+	fprintf(stream, "  (function(){ var t = tablink[%d], k;\n", PLUGIN_MENU_TAB);
+	fprintf(stream, "    if (!t || !t.length || !tabtitle[%d]) return;\n", PLUGIN_MENU_TAB);
+	fprintf(stream, "    for (k = t.length - 1; k > 0; k--)\n");
+	fprintf(stream, "      if (String(t[k]).replace(/^\\/+/, '') == \"Advanced_plugincenter.asp\"){\n");
+	fprintf(stream, "        tabtitle[%d].splice(k,1); t.splice(k,1); }\n", PLUGIN_MENU_TAB);
+	fprintf(stream, "  })();\n");
+	fprintf(stream, "  /* 1) 插件中心：固定插在「系统日志」之后 */\n");
+	fprintf(stream, "  pcIns(%d, ", PLUGIN_CENTER_L2);
+	plugin_js_string(stream, "插件中心", (int) strlen("插件中心"));
+	fprintf(stream, ", \"Advanced_plugincenter.asp\");\n");
+	fprintf(stream, "  /* 2) 分类目录：固件里已有同名目录（广告管理 / DNS服务 / 科学上网 / 穿透服务 ...）\n");
+	fprintf(stream, "        就直接复用，没有才在插件中心后面新建，避免左侧出现两个同名目录 */\n");
+	/* 先把「分类表」整体下发：先补建缺失的目录，再统一重新定位，
+	 * 避免边插边记导致先前记下的 menuL2 索引被后续插入挤偏 */
+	fprintf(stream, "  var pcCats = [");
+	for (j = 0; j < PLUGIN_CAT_COUNT; j++) {
+		for (i = 0; i < plugin_menu_count; i++) {
+			if (plugin_menu_items[i].cat == j)
+				break;
+		}
+		if (i >= plugin_menu_count)
+			continue;
+		fprintf(stream, "%s\n    [\"%s\",", first ? "" : ",", plugin_cats[j].key);
+		first = 0;
+		plugin_js_string(stream, plugin_cats[j].title, (int) strlen(plugin_cats[j].title));
+		fprintf(stream, "]");
+	}
+	fprintf(stream, "\n  ];\n");
+	fprintf(stream, "  for (var pcJ = 0; pcJ < pcCats.length; pcJ++)\n");
+	fprintf(stream, "    if (pcFind(pcCats[pcJ][1]) < 0)\n");
+	fprintf(stream, "      pcIns(pcNext++, pcCats[pcJ][1], \"Advanced_plugincat.asp?c=\" + pcCats[pcJ][0]);\n");
+	fprintf(stream, "  for (var pcJ = 0; pcJ < pcCats.length; pcJ++){\n");
+	fprintf(stream, "    var pcT = pcFind(pcCats[pcJ][1]);\n");
+	fprintf(stream, "    if (pcT > 0) pcL2[pcCats[pcJ][0]] = pcT; }\n");
+
+	fprintf(stream, "  /* 3) 每个插件一条标签页，挂进它所属的分类目录 */\n");
+	for (i = 0; i < plugin_menu_count; i++) {
+		const char *key;
+
+		it = &plugin_menu_items[i];
+		if (!it->page[0])
+			continue;
+		key = (it->cat >= 0) ? plugin_cats[it->cat].key : "";
+
+		fprintf(stream, "  (function(){ var tab = (pcL2[\"%s\"] > 0) ? pcL2[\"%s\"] - 1 : %d;\n",
+			key, key, PLUGIN_MENU_TAB);
+		fprintf(stream, "     pcG(tab); tabtitle[tab].push(");
+		plugin_js_string(stream, it->title, (int) strlen(it->title));
+		fprintf(stream, "); tablink[tab].push(");
+		plugin_js_string(stream, it->page, (int) strlen(it->page));
+		fprintf(stream, "); })();\n");
+	}
+
+	/* the category page and the plugin center read this table */
+	fprintf(stream, "  window.PLUGIN_MENU = [");
+	for (i = 0; i < plugin_menu_count; i++) {
+		const char *key = "";
+		const char *group = "";
+
+		it = &plugin_menu_items[i];
+		if (it->cat >= 0) {
+			key = plugin_cats[it->cat].key;
+			group = plugin_cats[it->cat].title;
+		}
+		fprintf(stream, "%s\n    {n:", i ? "," : "");
+		plugin_js_string(stream, it->pkg, (int) strlen(it->pkg));
+		fprintf(stream, ",t:");
+		plugin_js_string(stream, it->title, (int) strlen(it->title));
+		fprintf(stream, ",u:");
+		plugin_js_string(stream, it->page, (int) strlen(it->page));
+		fprintf(stream, ",c:");
+		plugin_js_string(stream, key, (int) strlen(key));
+		fprintf(stream, ",g:");
+		plugin_js_string(stream, group, (int) strlen(group));
+		fprintf(stream, "}");
+	}
+	fprintf(stream, "\n  ];\n");
+
+	/* 目录的 menuL2 索引在运行时生成（复用已有目录或新建），
+	 * Advanced_plugincat.asp / Advanced_plugincenter.asp 靠它高亮左侧菜单 */
+	fprintf(stream, "  window.PLUGIN_CAT_L2 = pcL2;\n})();\n/* plugin center: dynamic menu end */\n");
 }
 
 static int
@@ -4470,6 +4862,391 @@ plugin_is_state_js(const char *url)
 	const char *p = strrchr(url, '/');
 
 	return strcmp(p ? p + 1 : url, "state.js") == 0;
+}
+
+/* ------------------------------------------------------------------------
+ * 通用插件管理页数据钩子（/Advanced_plugincfg.asp?p=<pkg>）
+ *
+ *   <% plugin_detail(); %> -> [{n:pkg,t:title,p:own page,u:menu url,c:cat key,
+ *                               g:cat group,h:has own page,w:has webui.conf,
+ *                               e:enabled(-1 unknown)}]
+ *   <% plugin_webui(); %>  -> [{n:pkg,t:title,f:[[key,label,type,def,cur],...]}]
+ *
+ * 独立安装的插件不一定带 web/ 页面（smartdns / ttyd / dogcom / 3proxy 都没有），
+ * 旧实现只在 web/ 存在时才登记页面，于是这些插件在菜单和分类页里彻底消失。
+ * 这里改为「只要有 manifest.json 就一定有入口」：自带页面走 /plugin/<pkg>/，
+ * 没有自带页面走通用页，配置项读插件包的 webui.conf、值读 <pkg>/config。
+ * ------------------------------------------------------------------------ */
+#define PLUGIN_CONFIG_FILE	"config"
+#define PLUGIN_WEBUI_CONF	"webui.conf"
+#define PLUGIN_LIST_MAX		48
+
+/* .state 一行：pkg<TAB>installed<TAB>enabled；返回 -1 表示没有记录 */
+static int
+plugin_state_enabled(const char *pkg)
+{
+	char path[128];
+	char line[192];
+	char *tab, *en;
+	FILE *fp;
+	int ret = -1;
+
+	snprintf(path, sizeof(path), "%s/.state", PLUGIN_STORE_DIR);
+	fp = fopen(path, "r");
+	if (!fp)
+		return -1;
+
+	while (fgets(line, sizeof(line), fp)) {
+		tab = strchr(line, '\t');
+		if (!tab)
+			continue;
+		*tab = '\0';
+		plugin_menu_trim(line);
+		if (strcmp(line, pkg) != 0)
+			continue;
+		en = strchr(tab + 1, '\t');
+		ret = (en && en[1] == '1') ? 1 : 0;
+		break;
+	}
+	fclose(fp);
+
+	return ret;
+}
+
+/* 取 manifest.json 里某个字符串字段（文件很小，整体读入后找 "key") */
+static void
+plugin_manifest_field(const char *pkg, const char *key, char *out, size_t outlen)
+{
+	char path[192], buf[2048], pat[48];
+	char *p;
+	size_t n = 0;
+	FILE *fp;
+
+	if (outlen == 0)
+		return;
+	out[0] = '\0';
+
+	snprintf(path, sizeof(path), "%s/%s/manifest.json", PLUGIN_STORE_DIR, pkg);
+	fp = fopen(path, "r");
+	if (!fp)
+		return;
+	n = fread(buf, 1, sizeof(buf) - 1, fp);
+	fclose(fp);
+	buf[n] = '\0';
+
+	snprintf(pat, sizeof(pat), "\"%s\"", key);
+	p = strstr(buf, pat);
+	if (!p)
+		return;
+	p = strchr(p + strlen(pat), ':');
+	if (!p)
+		return;
+	p = strchr(p, '"');
+	if (!p)
+		return;
+	p++;
+	for (n = 0; p[n] && p[n] != '"' && n + 1 < outlen; n++)
+		out[n] = p[n];
+	out[n] = '\0';
+}
+
+/* <pkg>/config 里的 key=value */
+static void
+plugin_config_get(const char *pkg, const char *key, char *out, size_t outlen)
+{
+	char path[192], line[512];
+	size_t kl;
+	FILE *fp;
+
+	if (outlen == 0)
+		return;
+	out[0] = '\0';
+
+	snprintf(path, sizeof(path), "%s/%s/%s", PLUGIN_STORE_DIR, pkg, PLUGIN_CONFIG_FILE);
+	fp = fopen(path, "r");
+	if (!fp)
+		return;
+	kl = strlen(key);
+	while (fgets(line, sizeof(line), fp)) {
+		plugin_menu_trim(line);
+		if (line[0] == '#' || strncmp(line, key, kl) != 0 || line[kl] != '=')
+			continue;
+		snprintf(out, outlen, "%s", line + kl + 1);
+		break;
+	}
+	fclose(fp);
+}
+
+/* 插件自带的第一个页面：menu.conf 首行，其次 index.asp/html/htm */
+static void
+plugin_own_page(const char *pkg, char *out, size_t outlen)
+{
+	static const char *const def_pages[] = {
+		PLUGIN_DEFAULT_PAGE, "index.html", "index.htm"
+	};
+	char path[256], line[256];
+	char *bar, *page;
+	FILE *fp;
+	size_t i;
+
+	if (outlen == 0)
+		return;
+	out[0] = '\0';
+
+	snprintf(path, sizeof(path), "%s/%s/%s/%s",
+		PLUGIN_STORE_DIR, pkg, PLUGIN_WEB_DIR, PLUGIN_MENU_CONF);
+	fp = fopen(path, "r");
+	if (fp) {
+		while (fgets(line, sizeof(line), fp)) {
+			bar = strchr(line, '|');
+			if (!bar)
+				continue;
+			page = bar + 1;
+			bar = strchr(page, '|');
+			if (bar)
+				*bar = '\0';
+			plugin_menu_trim(page);
+			if (page[0] && plugin_page_ok(page)) {
+				snprintf(out, outlen, "%s", page);
+				break;
+			}
+		}
+		fclose(fp);
+		if (out[0])
+			return;
+	}
+
+	for (i = 0; i < sizeof(def_pages) / sizeof(def_pages[0]); i++) {
+		snprintf(path, sizeof(path), "%s/%s/%s/%s",
+			PLUGIN_STORE_DIR, pkg, PLUGIN_WEB_DIR, def_pages[i]);
+		if (access(path, R_OK) == 0) {
+			snprintf(out, outlen, "%s", def_pages[i]);
+			return;
+		}
+	}
+
+	plugin_first_page(pkg, out, outlen);
+}
+
+/* 与 plugin_menu_add 一致的分类判定：menu.conf 第三列优先，其次按名字猜 */
+static int
+plugin_effective_cat(const char *pkg, const char *title)
+{
+	char path[256], line[256], key[PLUGIN_CAT_KEY_MAX + 1];
+	char *b1, *b2;
+	FILE *fp;
+	int idx = -1;
+
+	snprintf(path, sizeof(path), "%s/%s/%s/%s",
+		PLUGIN_STORE_DIR, pkg, PLUGIN_WEB_DIR, PLUGIN_MENU_CONF);
+	fp = fopen(path, "r");
+	if (fp) {
+		while (fgets(line, sizeof(line), fp)) {
+			b1 = strchr(line, '|');
+			if (!b1)
+				continue;
+			b2 = strchr(b1 + 1, '|');
+			if (!b2)
+				continue;
+			snprintf(key, sizeof(key), "%s", b2 + 1);
+			plugin_menu_trim(key);
+			idx = plugin_cat_by_key(key);
+			if (idx >= 0)
+				break;
+		}
+		fclose(fp);
+	}
+	if (idx < 0)
+		idx = plugin_cat_guess(pkg, title);
+
+	return idx;
+}
+
+/* 已安装插件名（含没有 web/ 的纯二进制插件），按名字排序保证输出稳定 */
+static int
+plugin_list_names(char names[][PLUGIN_MENU_NAME_MAX + 1], int max)
+{
+	char full[256];
+	char tmp[PLUGIN_MENU_NAME_MAX + 1];
+	struct dirent *de;
+	struct stat st;
+	DIR *dir;
+	size_t len;
+	int count = 0, i, j;
+
+	dir = opendir(PLUGIN_STORE_DIR);
+	if (!dir)
+		return 0;
+
+	while ((de = readdir(dir)) != NULL) {
+		if (de->d_name[0] == '.')
+			continue;
+		len = strlen(de->d_name);
+		if (len < 1 || len > PLUGIN_MENU_NAME_MAX)
+			continue;
+		snprintf(full, sizeof(full), "%s/%s/%s",
+			PLUGIN_STORE_DIR, de->d_name, PLUGIN_WEB_DIR);
+		if (stat(full, &st) != 0 || !S_ISDIR(st.st_mode)) {
+			snprintf(full, sizeof(full), "%s/%s/manifest.json",
+				PLUGIN_STORE_DIR, de->d_name);
+			if (access(full, R_OK) != 0)
+				continue;
+		}
+		if (count >= max)
+			break;
+		strcpy(names[count], de->d_name);
+		count++;
+	}
+	closedir(dir);
+
+	for (i = 1; i < count; i++) {
+		strcpy(tmp, names[i]);
+		for (j = i - 1; j >= 0 && strcmp(names[j], tmp) > 0; j--)
+			strcpy(names[j + 1], names[j]);
+		strcpy(names[j + 1], tmp);
+	}
+
+	return count;
+}
+
+static int
+ej_plugin_detail_hook(int eid, webs_t wp, int argc, char **argv)
+{
+	static char names[PLUGIN_LIST_MAX][PLUGIN_MENU_NAME_MAX + 1];
+	char title[PLUGIN_MENU_NAME_MAX + 1];
+	char page[192], url[256], cat[PLUGIN_CAT_KEY_MAX + 1];
+	char path[256];
+	const char *group;
+	int count, i, idx, has, isui;
+
+	(void) eid; (void) argc; (void) argv;
+
+	count = plugin_list_names(names, PLUGIN_LIST_MAX);
+
+	fputs("[", wp);
+	for (i = 0; i < count; i++) {
+		plugin_manifest_field(names[i], "title", title, sizeof(title));
+		if (!title[0])
+			snprintf(title, sizeof(title), "%s", names[i]);
+
+		plugin_own_page(names[i], page, sizeof(page));
+		idx = plugin_effective_cat(names[i], title);
+		group = (idx >= 0) ? plugin_cats[idx].title : "高级设置";
+		snprintf(cat, sizeof(cat), "%s", (idx >= 0) ? plugin_cats[idx].key : "");
+
+		has = page[0] ? 1 : 0;
+		if (has)
+			snprintf(url, sizeof(url), "/plugin/%s/%s", names[i], page);
+		else
+			snprintf(url, sizeof(url), "%s%s", PLUGIN_CFG_PAGE, names[i]);
+
+		snprintf(path, sizeof(path), "%s/%s/%s",
+			PLUGIN_STORE_DIR, names[i], PLUGIN_WEBUI_CONF);
+		isui = (access(path, R_OK) == 0) ? 1 : 0;
+
+		if (i)
+			fputc(',', wp);
+		fputs("{n:", wp);
+		plugin_js_string(wp, names[i], (int) strlen(names[i]));
+		fputs(",t:", wp);
+		plugin_js_string(wp, title, (int) strlen(title));
+		fputs(",p:", wp);
+		plugin_js_string(wp, page, (int) strlen(page));
+		fputs(",u:", wp);
+		plugin_js_string(wp, url, (int) strlen(url));
+		fputs(",c:", wp);
+		plugin_js_string(wp, cat, (int) strlen(cat));
+		fputs(",g:", wp);
+		plugin_js_string(wp, group, (int) strlen(group));
+		fprintf(wp, ",h:%d,w:%d,e:%d}", has, isui, plugin_state_enabled(names[i]));
+	}
+	fputs("]", wp);
+	fflush(wp);
+
+	return 0;
+}
+
+static int
+ej_plugin_webui_hook(int eid, webs_t wp, int argc, char **argv)
+{
+	static char names[PLUGIN_LIST_MAX][PLUGIN_MENU_NAME_MAX + 1];
+	char path[256], line[384], title[PLUGIN_MENU_NAME_MAX + 1];
+	char key[64], label[128], type[24], def[128], cur[160], *f[4], *q;
+	int count, i, nf, first = 1, j;
+	FILE *fp;
+
+	(void) eid; (void) argc; (void) argv;
+
+	count = plugin_list_names(names, PLUGIN_LIST_MAX);
+
+	fputs("[", wp);
+	for (i = 0; i < count; i++) {
+		snprintf(path, sizeof(path), "%s/%s/%s",
+			PLUGIN_STORE_DIR, names[i], PLUGIN_WEBUI_CONF);
+		fp = fopen(path, "r");
+		if (!fp)
+			continue;
+
+		plugin_manifest_field(names[i], "title", title, sizeof(title));
+		if (!title[0])
+			snprintf(title, sizeof(title), "%s", names[i]);
+
+		if (!first)
+			fputc(',', wp);
+		first = 0;
+		fputs("{n:", wp);
+		plugin_js_string(wp, names[i], (int) strlen(names[i]));
+		fputs(",t:", wp);
+		plugin_js_string(wp, title, (int) strlen(title));
+		fputs(",f:[", wp);
+
+		nf = 0;
+		while (fgets(line, sizeof(line), fp)) {
+			plugin_menu_trim(line);
+			if (!line[0] || line[0] == '#')
+				continue;
+			j = 0;
+			q = line;
+			f[j++] = q;
+			while (j < 4) {
+				q = strchr(q, '|');
+				if (!q)
+					break;
+				*q++ = '\0';
+				f[j++] = q;
+			}
+			if (j < 3)
+				continue;
+			snprintf(key, sizeof(key), "%s", f[0]);
+			snprintf(label, sizeof(label), "%s", f[1]);
+			snprintf(type, sizeof(type), "%s", f[2]);
+			snprintf(def, sizeof(def), "%s", (j > 3) ? f[3] : "");
+			plugin_config_get(names[i], key, cur, sizeof(cur));
+			if (!cur[0])
+				snprintf(cur, sizeof(cur), "%s", def);
+
+			if (nf)
+				fputc(',', wp);
+			nf++;
+			fputs("[", wp);
+			plugin_js_string(wp, key, (int) strlen(key));
+			fputc(',', wp);
+			plugin_js_string(wp, label, (int) strlen(label));
+			fputc(',', wp);
+			plugin_js_string(wp, type, (int) strlen(type));
+			fputc(',', wp);
+			plugin_js_string(wp, def, (int) strlen(def));
+			fputc(',', wp);
+			plugin_js_string(wp, cur, (int) strlen(cur));
+			fputs("]", wp);
+		}
+		fclose(fp);
+		fputs("]}", wp);
+	}
+	fputs("]", wp);
+	fflush(wp);
+
+	return 0;
 }
 
 /* state.js keeps <#...#> translation, then gets the plugin menu appended */
@@ -4799,6 +5576,8 @@ struct ej_handler ej_handlers[] =
 	{ "detect_internet", ej_detect_internet_hook},
 	{ "dump_syslog", ej_dump_syslog_hook},
 	{ "plugin_center", ej_plugin_center_hook},
+	{ "plugin_detail", ej_plugin_detail_hook},
+	{ "plugin_webui", ej_plugin_webui_hook},
 	{ "dump_eth_mib", ej_dump_eth_mib_hook},
 	{ "get_usb_ports_info", ej_get_usb_ports_info},
 	{ "get_ext_ports_info", ej_get_ext_ports_info},

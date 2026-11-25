@@ -156,65 +156,163 @@ This project is based on original rt-n56u with latest mtk 4.4.198 kernel, which 
 - How to use IPv6 NAT and fullcone NAT
 - How to add new device support with device tree
 
-# Plugin Center: dynamic menu under Advanced Settings
+# 插件中心（Plugin Center）
 
-Install a plugin that ships a `web/` directory and its admin page shows up in the
-router menu by itself - no firmware rebuild, nothing written into the read-only
-`/www` squashfs.
+Padavan 4.4 本身是「插件全部编进固件」的模式：想要的功能必须在编译前写进
+`config` 模板里，刷好机之后没法再装。这里把固件改成 OpenWrt 那种「插件仓库 +
+在线安装」的用法：固件只保留一套插件框架，插件包放到 GitHub Release，用户在 Web
+后台点「安装」即可，装完不用重启、不用重刷固件，左侧菜单会自动出现入口。
 
-| Piece | File | What it does |
+## 菜单长什么样
+
+左侧「高级设置」下面，**插件中心固定排在「系统日志」之后**：
+
+```
+系统日志
+插件中心          <- 本功能，始终存在
+<分类目录 1..N>   <- 只在装了对应分类的插件后才出现
+```
+
+插件中心页里是插件仓库的完整清单（名字、分类、大小、状态），每个插件可以
+「安装 / 启用 / 停用 / 卸载」，也可以一键「同步仓库」拉取最新清单。
+
+装好的插件**自动分类**到对应目录，装完刷新页面就能看到，卸载后入口自动消失：
+
+| 分类 | 目录 | 命中示例 |
 | --- | --- | --- |
-| Menu injection | `trunk/user/httpd/src/web_ex.c` | `state.js` is served through `do_js()`, which appends `tabtitle[6].push(...)` / `tablink[6].push(...)` built by scanning `/etc/storage/plugins/*/web/` at request time |
-| Page routing | `trunk/user/httpd/src/httpd.c` | `/plugin/<pkg>/<file>` is mapped to `/etc/storage/plugins/<pkg>/web/<file>` |
-| Install hook | `trunk/user/scripts/files/usr/bin/pluginctl` | after install, writes `web/menu.conf` for plugins that ship a page but no menu file |
+| ad | 广告管理 | adbyby、adguardhome、adblock、nanoad |
+| dns | DNS服务 | smartdns、dnsmasq、chinadns、dnsproxy、aliddns |
+| proxy | 科学上网 | xray、v2ray、clash、shadowsocks、trojan、singbox |
+| tunnel | 穿透服务 | frp、zerotier、ddnsto、tailscale、wireguard |
+| nas | 存储下载 | alidriver、aria2、transmission、xupnpd、vsftpd |
+| net | 网络工具 | iperf3、socat、mtr、tcpdump、lrzsz、msd_lite |
+| term | 终端运维 | ttyd、htop、nano |
+| campus | 校园网认证 | mentohust、u2ec、scutclient、dogcom、minieap |
+| qos | QOS流控 | sqm、cake |
+| misc | 其他插件 | 未命中的其它包 |
 
-## Plugin package layout
+分类判定顺序：插件包 `web/menu.conf` 第三列 > 插件仓库索引里的 `cat` 字段 >
+按包名关键字匹配 > 兜底「其他插件」。
+
+**同名目录复用**：固件里本来就有「广告管理 / DNS服务 / 科学上网 / 穿透服务」
+这些目录时，插件直接挂进原有目录（成为该目录下的一个新标签页），不会出现两个
+同名目录；只有固件没有的目录（例如「终端运维」）才在「插件中心」后面新建。
+
+## 组成
+
+| 部件 | 文件 | 作用 |
+| --- | --- | --- |
+| 菜单注入 | `trunk/user/httpd/src/web_ex.c` | `state.js` 由 `do_js()` 输出，输出末尾动态追加 `menuL2_title/tabtitle/tablink` 的 splice/push，内容来自 `/etc/storage/plugins/*` 的实时扫描 |
+| 页面路由 | `trunk/user/httpd/src/httpd.c` | `/plugin/<pkg>/<file>` 映射到 `/etc/storage/plugins/<pkg>/web/<file>`，包名校验、禁止 `..` 与反斜杠 |
+| 插件中心页 | `trunk/user/www/n56u_ribbon_fixed/Advanced_plugincenter.asp` | 清单、分类筛选、安装/启用/停用/卸载、同步仓库 |
+| 分类页 | `Advanced_plugincat.asp` | 新建分类目录的落地页，列出该分类下已装插件 |
+| 通用管理页 | `Advanced_plugincfg.asp` | 纯二进制插件的统一管理页：状态、启停、自启、`webui.conf` 配置表单 |
+| 安装器 | `trunk/user/scripts/files/usr/bin/pluginctl` | 纯 busybox sh，无 python/jq：sync / list / install / remove / start / stop / enable / disable / menu / setcfg |
+| 字典 | `trunk/user/www/dict/CN.dict` | `menu5_40=插件中心`、`menu5_41=插件设置` |
+
+这些文件都已经直接提交在源码树里，`git clone` 后 `make K2P` 出来的固件自带插件
+中心；仓库根目录的 `plugincenter-overlay.tar.gz` 只是给 CI 用的同一份文件的打包
+（工作流从上游 tarball 构建时覆盖进去），两边内容保持一致。
+
+## 插件包结构
 
 ```
 <plugin>.tar.gz
-|-- install.sh               # optional, run right after extraction
-|-- start.sh / stop.sh       # optional, hooked into the autostart list
-`-- web/
-    |-- menu.conf            # optional: one "Menu title|page" per line
-    |-- Advanced_mypage.asp  # served at /plugin/<pkg>/Advanced_mypage.asp
-    `-- index.html           # fallback when menu.conf is absent
+|-- manifest.json            # {"name":"smartdns","title":"SmartDNS"}，有它就一定有菜单入口
+|-- install.sh               # 可选，解包后执行一次
+|-- start.sh / stop.sh       # 可选，安装后「启用」会调用
+|-- uninstall.sh             # 可选，卸载前执行
+|-- web/                     # 可选，插件自带管理页面
+|   |-- menu.conf            # 菜单名|页面文件|分类
+|   |-- index.asp            # 没写 menu.conf 时的默认页
+|   `-- Advanced_xxx.asp
+`-- usr/bin/xxx             # 可执行文件，安装时自动软链到 /opt/bin
 ```
 
-Files are extracted to `/etc/storage/plugins/<pkg>/` (persistent partition), so
-`web/` survives reboots.
+安装目录是 `/etc/storage/plugins/<pkg>/`（持久分区，`mtd_storage.sh save` 会写回
+flash），重启不丢。
 
-## Menu file
+## menu.conf
 
-`web/menu.conf`, UTF-8, one entry per line:
+UTF-8，一行一个菜单项：
 
 ```
-广告过滤|Advanced_nanoad.asp
-运行日志|Advanced_nanoad_log.asp
+广告过滤|Advanced_nanoad.asp|ad
+运行日志|Advanced_nanoad_log.asp|ad
 ```
 
-- field 1: menu title (up to 64 bytes, trimmed on a UTF-8 char boundary)
-- field 2: file inside `web/` (no `/`, no `..`)
-- without `menu.conf` the httpd falls back to `index.asp` -> `index.html` -> `index.htm`
-  and uses the plugin directory name as the title
+- 第 1 列：菜单标题（<=64 字节，按 UTF-8 字符边界截断）
+- 第 2 列：`web/` 里的页面文件名（不含 `/`，不含 `..`）
+- 第 3 列：分类（`ad/dns/proxy/tunnel/nas/net/term/campus/qos/misc`，可省略）
 
-## URLs served
+没有 `menu.conf` 时，httpd 依次找 `index.asp` → `index.html` → `index.htm`，
+标题取 `manifest.json` 的 `title`，分类按包名猜。
 
-| Request | Served from |
+## 访问地址
+
+| 请求 | 实际文件 |
 | --- | --- |
 | `/plugin/<pkg>/<file>` | `/etc/storage/plugins/<pkg>/web/<file>` |
-| `/plugin/<pkg>/css/a.css` | sub-directories are allowed |
-| `/plugin/../etc/passwd` | rejected: package name whitelist `[A-Za-z0-9._-]`, no `..` segment, no backslash |
+| `/plugin/<pkg>/css/a.css` | 允许子目录 |
+| `/plugin/../etc/passwd` | 拒绝：包名白名单 `[A-Za-z0-9._-]`、禁止 `..`、禁止反斜杠 |
 
-`.asp` pages still go through `do_ej()` (`<#tag#>` translation) and the usual login
-check; `.html` / `.js` / `.css` / images are served as-is. Relative references
-inside a plugin page resolve under `/plugin/<pkg>/`.
+`.asp` 页面照常走 `do_ej()`（`<#tag#>` 翻译）和登录校验；`.html`/`.js`/`.css`/
+图片按原样输出。插件页里的相对路径会落在 `/plugin/<pkg>/` 下。
 
-## Checking from a shell
+## 插件仓库
 
-```sh
-pluginctl menu       # name <TAB> title <TAB> /plugin/<pkg>/<page>
+插件包和索引放在同一仓库的 `plugin-repo` Release 上，路由侧只需要两个文件：
+
+- `plugins.txt`：`name|title|file|size|sha256[|cat]`，awk 直接解析
+- `<name>.tar.gz`：插件包本体
+
+固件里默认下载地址：
+
+```
+https://github.com/jonepjxh/padavan-TurBoTse/releases/download/plugin-repo
 ```
 
-Reload any router page (state.js is regenerated on every request) and the entry
-appears under **Advanced Settings**. Uninstalling the plugin removes the entry,
-because both the menu and the page live in the plugin directory.
+可以用环境变量覆盖（自建反代 / 内网镜像）：
+
+```sh
+PLUGIN_REPO_MIRROR=http://192.168.1.10/plugin-repo pluginctl sync
+```
+
+下载走 `gh-proxy.com` → 原始地址 → `ghproxy.net` 三个候选，任一成功即返回；因为
+GitHub release-assets 在部分网络下直连 443 会超时，镜像优先。
+
+## 命令行
+
+```sh
+pluginctl sync              # 拉取插件清单
+pluginctl list              # 输出 name|title|file|size|installed|enabled|cat
+pluginctl install smartdns  # 下载并安装
+pluginctl start smartdns    # 启用 / 跑 start.sh
+pluginctl stop smartdns
+pluginctl enable smartdns   # 写开机自启
+pluginctl disable smartdns
+pluginctl remove smartdns   # 卸载，菜单同步消失
+pluginctl menu              # 当前会出现在菜单里的插件页
+pluginctl setcfg smartdns cache=4096
+```
+
+## 新增一个插件
+
+1. 编好二进制，放进插件包 `usr/bin` 或 `usr/sbin`；
+2. 需要管理页面就放 `web/index.asp`（或 `web/menu.conf` 指定标题/分类）；
+3. 打 tar.gz，写进 `plugins.txt`（有 `cat` 列最好），上传到 `plugin-repo` Release；
+4. 路由器上「同步仓库」→「安装」。
+
+不需要改 C 代码，也不需要重新编译固件。
+
+## 排查
+
+```sh
+pluginctl status                      # 安装/启用状态
+pluginctl menu                        # 菜单里应该出现什么
+cat /etc/storage/plugins/.view.txt     # 插件中心页的数据源
+logread | grep pluginctl              # 安装日志
+```
+
+菜单没出来时先确认 `state.js` 末尾有 `/* plugin center: dynamic menu (generated) */`
+这段注入（浏览器强制刷新一次，`state.js` 是 no-cache 但浏览器可能仍缓存）。

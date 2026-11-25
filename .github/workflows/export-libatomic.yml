@@ -10,22 +10,37 @@ jobs:
   export:
     runs-on: ubuntu-24.04
     steps:
-      - name: Fetch musl cross toolchain
+      - name: Try cross toolchain image
         run: |
-          curl -fL --retry 3 -o musl.tgz https://musl.cc/mipsel-linux-musl-cross.tgz
-          tar xzf musl.tgz
-          ls -l mipsel-linux-musl-cross/mipsel-linux-musl/lib/libatomic*
+          set -x
+          mkdir -p out
+          docker pull messense/rust-musl-cross:mipsel-musl
+          docker create --name tc messense/rust-musl-cross:mipsel-musl
+          docker cp tc:/usr/local/musl/mipsel-unknown-linux-musl/lib/. out/ || docker cp tc:/usr/local/musl/lib/. out/ || true
+          ls -l out | head -40
+
+      - name: Try direct mirrors if missing
+        if: ${{ hashFiles('out/libatomic.so.1*') == '' }}
+        run: |
+          mkdir -p dl && cd dl
+          for u in \
+            https://musl.cc/mipsel-linux-musl-cross.tgz \
+            https://mirror.ghproxy.com/https://musl.cc/mipsel-linux-musl-cross.tgz \
+            https://ghfast.top/https://musl.cc/mipsel-linux-musl-cross.tgz ; do
+            echo "try $u"
+            if curl -fL --retry 2 --max-time 600 -o m.tgz "$u"; then tar xzf m.tgz && break; fi
+          done
+          cp -L mipsel-linux-musl-cross/mipsel-linux-musl/lib/libatomic.so* ../out/ || true
+          ls -l ../out
 
       - name: Collect libs
         run: |
-          mkdir -p out
-          cp mipsel-linux-musl-cross/mipsel-linux-musl/lib/libatomic.so.1* out/ || true
-          cp mipsel-linux-musl-cross/mipsel-linux-musl/lib/libgcc_s.so.1* out/ || true
-          ls -l out
+          cp -L out/libatomic.so* final/ 2>/dev/null || mkdir -p final && cp -L out/libatomic.so* final/
+          ls -l final
 
       - name: Publish to plugin-repo
         uses: softprops/action-gh-release@v2
         with:
           tag_name: plugin-repo
-          files: out/*
-          fail_on_unmatched_files: false
+          files: final/*
+          fail_on_unmatched_files: true

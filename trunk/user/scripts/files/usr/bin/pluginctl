@@ -209,11 +209,13 @@ cmd_install(){
     # symlink binaries into /opt/bin (in PATH). Prefer /opt/bin if writable, else /etc/storage/bin.
     local linkdir=/opt/bin
     [ -d "$linkdir" ] || mkdir -p "$linkdir" 2>/dev/null
+    : > "$dest/uninstall.links"
     for d in usr/bin usr/sbin bin sbin; do
         [ -d "$dest/$d" ] || continue
         for f in "$dest/$d"/*; do
             [ -f "$f" ] && [ -x "$f" ] || continue
-            ln -sf "$f" "$linkdir/$(basename "$f")" 2>/dev/null
+            b=$(basename "$f")
+            ln -sf "$f" "$linkdir/$b" 2>/dev/null && echo "$b" >> "$dest/uninstall.links"
         done
     done
     state_set "$name" 1 0
@@ -229,7 +231,10 @@ cmd_remove(){
     local dest="$BASE/$name"
     [ -x "$dest/uninstall.sh" ] && "$dest/uninstall.sh" >/dev/null 2>&1
     unregister_autostart "$name"
-    [ -f "$dest/uninstall.links" ] && while read -r l; do rm -f "/opt/bin/$l" 2>/dev/null; done < "$dest/uninstall.links"
+    [ -f "$dest/uninstall.links" ] && while read -r l; do
+        [ -n "$l" ] || continue
+        rm -f "/opt/bin/$l" "/etc/storage/bin/$l" 2>/dev/null
+    done < "$dest/uninstall.links"
     rm -rf "$dest"
     state_set "$name" 0 0
     cmd_list >/dev/null 2>&1

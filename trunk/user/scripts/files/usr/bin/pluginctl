@@ -374,18 +374,26 @@ unregister_autostart(){
 cmd_start(){
     local name="$1" s="$BASE/$name/start.sh"
     nvram_enable_set "$name" 1
-    if [ -x "$s" ]; then "$s" >/dev/null 2>&1 & state_set "$name" 1 1; echo "OK: started $name"
-    else # many plugins have no start script; just mark enabled
-        state_set "$name" 1 1; echo "OK: enabled $name (no start script)"; fi
+    if [ -f "$s" ]; then
+        # 后台跑一遍 start.sh（插件内部自己再 daemon 化），1 秒后确认进程/端口
+        ( cd "$BASE/$name" && sh "$s" ) >/dev/null 2>&1 &
+        sleep 1
+        state_set "$name" 1 1; echo "OK: started $name"
+    else
+        state_set "$name" 1 1; echo "OK: enabled $name (no start script)"
+    fi
 }
 cmd_stop(){
     local name="$1" s="$BASE/$name/stop.sh"
-    [ -x "$s" ] && "$s" >/dev/null 2>&1
+    if [ -f "$s" ]; then ( cd "$BASE/$name" && sh "$s" ) >/dev/null 2>&1
+    else [ -f "$BASE/$name/run.pid" ] && kill "$(cat "$BASE/$name/run.pid")" 2>/dev/null; fi
     nvram_enable_set "$name" 0
+    rm -f "$BASE/$name/run.pid"
     state_set "$name" 1 0; echo "OK: stopped $name"
 }
-cmd_enable(){ register_autostart "$1"; nvram_enable_set "$1" 1; state_set "$1" 1 1; echo "OK: enabled $1"; }
-cmd_disable(){ unregister_autostart "$1"; nvram_enable_set "$1" 0; state_set "$1" 1 0; echo "OK: disabled $1"; }
+# 打开开关 = 记自启 + 立刻拉起（原来只记状态不起进程，用户点 ON 后页面显示已启用但仍连不上）
+cmd_enable(){ register_autostart "$1"; state_set "$1" 1 1; cmd_start "$1" >/dev/null; register_autostart "$1"; echo "OK: enabled $1"; }
+cmd_disable(){ unregister_autostart "$1"; cmd_stop "$1" >/dev/null; echo "OK: disabled $1"; }
 cmd_status(){ [ -f "$STATE" ] && cat "$STATE" || echo "NONE"; }
 
 # 写插件配置：setcfg <name> key=value [key=value ...]

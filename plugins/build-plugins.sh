@@ -256,15 +256,16 @@ EOF
 	pack lucky "Lucky" tunnel
 fi
 
-log "== filebrowser"
-if V=$(fetch_src filebrowser filebrowser/filebrowser v2.63.23) && build_frontend "$WORK/src/filebrowser/frontend" && gobuild filebrowser .; then
-	stage filebrowser "FileBrowser文件管理" nas
-	cp "$WORK/bin/filebrowser" "$ST/filebrowser/usr/bin/filebrowser"
-	gen_start filebrowser '$B/usr/bin/filebrowser -d $H/fb.db -p 8088 -a 0.0.0.0 -r /'
-	cat > "$ST/filebrowser/webui.conf" <<'EOF'
-desc|说明|text|浏览器打开 http://192.168.8.1:8088 首次进入用 admin/admin 登录后改密码，可浏览全盘文件
+log "== filemgr"
+# gohttpserver：内嵌前端资源的 Go 文件服务器（filebrowser 带前端后 14MB，24MB tmpfs 装不下）
+if V=$(fetch_src filemgr codeskyblue/gohttpserver master) && gobuild filemgr .; then
+	stage filemgr "文件管理" nas
+	cp "$WORK/bin/filemgr" "$ST/filemgr/usr/bin/gohttpserver"
+	gen_start filemgr '$B/usr/bin/gohttpserver --port 8088 --addr 0.0.0.0 --root / --upload --delete'
+	cat > "$ST/filemgr/webui.conf" <<'EOF'
+desc|说明|text|浏览器打开 http://192.168.8.1:8088 即可浏览/上传/下载/打包下载路由器文件（默认无密码，别把端口暴露到公网）
 EOF
-	pack filebrowser "FileBrowser文件管理" nas
+	pack filemgr "文件管理" nas
 fi
 
 log "== cfddns"

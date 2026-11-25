@@ -5,11 +5,16 @@
 # Runs on GitHub Actions (ubuntu) or any x86_64 Linux with go + upx + gh.
 #   PUB=0  -> only build, keep artifacts in plugins/.out
 #   PUB=1  -> also upload + update plugins.txt (needs GH_TOKEN)
+#
+# 重要：必须固定 Go 版本（GOTOOLCHAIN=local，配合 workflow 里的 setup-go 1.25）。
+# 实测 go1.26 编出来的 mipsle 二进制在 K2P 4.4 内核上启动即崩
+# （runtime.futexwakeup 返回 -89 + SIGSEGV）；go1.23/1.25 编的同源二进制正常。
 set -u
 
 REPO="${REPO:-jonepjxh/padavan-TurBoTse}"
 TAG="${TAG:-plugin-repo}"
 PUB="${PUB:-0}"
+PKGVER="${PKGVER:-v3}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$ROOT/plugins/.work"
 OUT="$ROOT/plugins/.out"
@@ -17,30 +22,34 @@ ST="$WORK/stage"
 rm -rf "$WORK"; mkdir -p "$WORK" "$OUT" "$ST"
 
 export CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat GOFLAGS=-mod=mod
-export GOTOOLCHAIN=auto
+export GOTOOLCHAIN=local
 
 log(){ echo "[build] $*"; }
+: > "$OUT/.index"
 
-# 上游源码（浅克隆）到 $WORK/src/<name>，返回版本串
-fetch_src(){ # name repo
-	local n="$1" r="$2"
+# 上游源码（浅克隆）到 $WORK/src/<name>，$3 可选 tag/branch
+fetch_src(){ # name repo [ref]
+	local n="$1" r="$2" ref="${3:-}"
 	if [ ! -d "$WORK/src/$n" ]; then
-		git clone --depth 1 "https://github.com/$r.git" "$WORK/src/$n" >/dev/null 2>&1 || return 1
+		if [ -n "$ref" ]; then
+			git clone --depth 1 --branch "$ref" "https://github.com/$r.git" "$WORK/src/$n" >/dev/null 2>&1 || return 1
+		else
+			git clone --depth 1 "https://github.com/$r.git" "$WORK/src/$n" >/dev/null 2>&1 || return 1
+		fi
 	fi
 	( cd "$WORK/src/$n" && git describe --tags --always 2>/dev/null | head -1 )
 }
 
-# 交叉编译：name pkgpath(bin 名同 name)
-gobuild(){ # name pkgpath outbin
-	local n="$1" p="$2" o="$3"
-	( cd "$WORK/src/$n" && go build -trimpath -ldflags "-s -w" -o "$WORK/bin/$n" "$p" ) >"$WORK/$n.build.log" 2>&1 || {
-		log "BUILD FAIL $n"; tail -5 "$WORK/$n.build.log"; return 1; }
+# 交叉编译：name pkgpath
+gobuild(){ # name pkgpath
+	local n="$1" p="$2"
+	( cd "$WORK/src/$n" && go build -buildvcs=false -trimpath -ldflags "-s -w" -o "$WORK/bin/$n" "$p" ) >"$WORK/$n.build.log" 2>&1 || {
+		log "BUILD FAIL $n"; tail -8 "$WORK/$n.build.log"; return 1; }
 	[ -f "$WORK/bin/$n" ] || return 1
 	if command -v upx >/dev/null 2>&1; then
 		upx -9 -q "$WORK/bin/$n" >/dev/null 2>&1 || true
 	fi
-	cp "$WORK/bin/$n" "$o"
-	log "built $n $(stat -c%s "$o") bytes"
+	log "built $n $(stat -c%s "$WORK/bin/$n") bytes"
 }
 mkdir -p "$WORK/bin"
 
@@ -70,7 +79,7 @@ lstop
 EOF
 	if [ -n "$req" ]; then
 		cat >> "$ST/$n/start.sh" <<EOF
-[ -f "\$H/$req" ] || { logger -t pluginctl "$n: 缺少 \$H/$req，请在插件设置页填好配置后再启动"; exit 0; }
+[ -f "\$H/$req" ] || { logger -t pluginctl "$n: 缺少 \$H/$req，请在插件配置里填好后再启动"; exit 0; }
 EOF
 	fi
 	cat >> "$ST/$n/start.sh" <<EOF
@@ -89,30 +98,35 @@ EOF
 	chmod +x "$ST/$n/start.sh" "$ST/$n/stop.sh"
 }
 
-pack(){ # name
-	local n="$1"
-	local f="$OUT/$n-v2.tar.gz"
+# 打包并写索引（size/sha256 取自真实文件；早期版本索引里错指 -v1.tar.gz，两列是空的）
+pack(){ # name title cat
+	local n="$1" t="$2" c="$3"
+	local f="$OUT/$n-$PKGVER.tar.gz" sz hx
 	[ -f "$ST/$n/webui.conf" ] || : > "$ST/$n/webui.conf"
 	# 归档根目录必须是包内容本身（pluginctl 解包到 /tmp/plugins/<name>，
 	# 多套一层 <name>/ 会导致 usr/bin/<bin> 找不到，实测会 “not found”）
 	tar czf "$f" --owner=0 --group=0 --numeric-owner -C "$ST/$n" .
-	log "package $f $(stat -c%s "$f") bytes"
+	sz=$(stat -c%s "$f"); hx=$(sha256sum "$f" | cut -d' ' -f1)
+	printf '%s|%s|%s|%s|%s|%s\n' "$n" "$t" "$(basename "$f")" "$sz" "$hx" "$c" >> "$OUT/.index"
+	log "package $(basename "$f") $sz bytes"
 }
 
 ########################################################################
+# ddns-go：固定 v6.10.0（go1.23.6）。v6.18.0 的 go.mod 要求 go1.26，
+# 会逼 CI 拉 1.26 工具链，编出来的二进制在 4.4 内核上启动即崩。
 log "== ddns-go"
-if V=$(fetch_src ddns-go jeessy2/ddns-go) && gobuild ddns-go . "$WORK/bin/ddns-go"; then
+if V=$(fetch_src ddns-go jeessy2/ddns-go v6.10.0) && gobuild ddns-go .; then
 	stage ddns-go "DDNS-GO" dns
 	cp "$WORK/bin/ddns-go" "$ST/ddns-go/usr/bin/ddns-go"
 	gen_start ddns-go '$B/usr/bin/ddns-go -l :9876 -f 300'
 	cat > "$ST/ddns-go/webui.conf" <<'EOF'
 desc|说明|text|装好后浏览器打开 http://192.168.8.1:9876 配置域名与 DNS 服务商
 EOF
-	pack ddns-go; echo "ddns-go|DDNS-GO|ddns-go-v2.tar.gz|$(stat -c%s "$OUT/ddns-go-v1.tar.gz")|$(sha256sum "$OUT/ddns-go-v1.tar.gz"|cut -d' ' -f1)|dns" >> "$OUT/.index"
+	pack ddns-go "DDNS-GO" dns
 fi
 
 log "== mosdns"
-if V=$(fetch_src mosdns IrineSistiana/mosdns) && gobuild mosdns . "$WORK/bin/mosdns"; then
+if V=$(fetch_src mosdns IrineSistiana/mosdns) && gobuild mosdns .; then
 	stage mosdns "MosDNS" dns
 	cp "$WORK/bin/mosdns" "$ST/mosdns/usr/bin/mosdns"
 	cat > "$ST/mosdns/config.yaml" <<'EOF'
@@ -151,13 +165,12 @@ EOF
 	cat > "$ST/mosdns/webui.conf" <<'EOF'
 desc|说明|text|默认监听 0.0.0.0:5353，上游 223.5.5.5/119.29.29.29，改配置见插件目录 config.yaml
 EOF
-	# config.yaml 也要写进 manifest 的文件列表
 	sed -i 's/"webui.conf"\]/"webui.conf", "config.yaml"]/' "$ST/mosdns/manifest.json"
-	pack mosdns; echo "mosdns|MosDNS|mosdns-v2.tar.gz|$(stat -c%s "$OUT/mosdns-v1.tar.gz")|$(sha256sum "$OUT/mosdns-v1.tar.gz"|cut -d' ' -f1)|dns" >> "$OUT/.index"
+	pack mosdns "MosDNS" dns
 fi
 
 log "== nps"
-if V=$(fetch_src nps ehang-io/nps) && gobuild nps ./cmd/nps "$WORK/bin/nps"; then
+if V=$(fetch_src nps ehang-io/nps) && gobuild nps ./cmd/nps; then
 	stage nps "NPS内网穿透" tunnel
 	cp "$WORK/bin/nps" "$ST/nps/usr/bin/nps"
 	cat > "$ST/nps/nps.conf" <<'EOF'
@@ -176,11 +189,11 @@ EOF
 desc|说明|text|管理面板 http://192.168.8.1:8080 账号 admin 密码 padavan，客户端连接端口 8024
 EOF
 	sed -i 's/"webui.conf"\]/"webui.conf", "nps.conf"]/' "$ST/nps/manifest.json"
-	pack nps; echo "nps|NPS内网穿透|nps-v2.tar.gz|$(stat -c%s "$OUT/nps-v1.tar.gz")|$(sha256sum "$OUT/nps-v1.tar.gz"|cut -d' ' -f1)|tunnel" >> "$OUT/.index"
+	pack nps "NPS内网穿透" tunnel
 fi
 
 log "== trojan-go"
-if V=$(fetch_src trojan-go p4gefau1t/trojan-go) && gobuild trojan-go . "$WORK/bin/trojan-go"; then
+if V=$(fetch_src trojan-go p4gefau1t/trojan-go) && gobuild trojan-go .; then
 	stage trojan-go "Trojan-Go" proxy
 	cp "$WORK/bin/trojan-go" "$ST/trojan-go/usr/bin/trojan-go"
 	cat > "$ST/trojan-go/config.example.json" <<'EOF'
@@ -199,39 +212,39 @@ EOF
 desc|说明|text|把 config.example.json 复制成 /etc/storage/plugins/.home/trojan-go/config.json 填好服务器后启动
 EOF
 	sed -i 's/"webui.conf"\]/"webui.conf", "config.example.json"]/' "$ST/trojan-go/manifest.json"
-	pack trojan-go; echo "trojan-go|Trojan-Go|trojan-go-v2.tar.gz|$(stat -c%s "$OUT/trojan-go-v1.tar.gz")|$(sha256sum "$OUT/trojan-go-v1.tar.gz"|cut -d' ' -f1)|proxy" >> "$OUT/.index"
+	pack trojan-go "Trojan-Go" proxy
 fi
 
 log "== gotty"
-if V=$(fetch_src gotty sorenisanerd/gotty) && gobuild gotty . "$WORK/bin/gotty"; then
+if V=$(fetch_src gotty sorenisanerd/gotty) && gobuild gotty .; then
 	stage gotty "GoTTY网页终端" term
 	cp "$WORK/bin/gotty" "$ST/gotty/usr/bin/gotty"
 	gen_start gotty '$B/usr/bin/gotty --port 7681 --permit-write --reconnect /bin/sh'
 	cat > "$ST/gotty/webui.conf" <<'EOF'
 desc|说明|text|浏览器打开 http://192.168.8.1:7681 直接操作路由器 shell
 EOF
-	pack gotty; echo "gotty|GoTTY网页终端|gotty-v2.tar.gz|$(stat -c%s "$OUT/gotty-v1.tar.gz")|$(sha256sum "$OUT/gotty-v1.tar.gz"|cut -d' ' -f1)|term" >> "$OUT/.index"
+	pack gotty "GoTTY网页终端" term
 fi
 
 log "== filebrowser"
-if V=$(fetch_src filebrowser filebrowser/filebrowser) && gobuild filebrowser . "$WORK/bin/filebrowser"; then
+if V=$(fetch_src filebrowser filebrowser/filebrowser) && gobuild filebrowser .; then
 	stage filebrowser "FileBrowser文件管理" nas
 	cp "$WORK/bin/filebrowser" "$ST/filebrowser/usr/bin/filebrowser"
 	gen_start filebrowser '$B/usr/bin/filebrowser -d $H/fb.db -p 8088 -a 0.0.0.0 -r /'
 	cat > "$ST/filebrowser/webui.conf" <<'EOF'
 desc|说明|text|浏览器打开 http://192.168.8.1:8088 首次进入创建管理员，可浏览全盘文件
 EOF
-	pack filebrowser; echo "filebrowser|FileBrowser文件管理|filebrowser-v2.tar.gz|$(stat -c%s "$OUT/filebrowser-v1.tar.gz")|$(sha256sum "$OUT/filebrowser-v1.tar.gz"|cut -d' ' -f1)|nas" >> "$OUT/.index"
+	pack filebrowser "FileBrowser文件管理" nas
 fi
 
 log "== speedtest-go"
-if V=$(fetch_src speedtest-go showwin/speedtest-go) && gobuild speedtest-go . "$WORK/bin/speedtest-go"; then
+if V=$(fetch_src speedtest-go showwin/speedtest-go) && gobuild speedtest-go .; then
 	stage speedtest-go "网络测速(Speedtest)" net
 	cp "$WORK/bin/speedtest-go" "$ST/speedtest-go/usr/bin/speedtest-go"
 	cat > "$ST/speedtest-go/webui.conf" <<'EOF'
 desc|说明|text|命令行工具：speedtest-go --server --all 选择节点，speedtest-go 直接测速
 EOF
-	pack speedtest-go; echo "speedtest-go|网络测速(Speedtest)|speedtest-go-v2.tar.gz|$(stat -c%s "$OUT/speedtest-go-v1.tar.gz")|$(sha256sum "$OUT/speedtest-go-v1.tar.gz"|cut -d' ' -f1)|net" >> "$OUT/.index"
+	pack speedtest-go "网络测速(Speedtest)" net
 fi
 
 echo "================ SUMMARY"

@@ -91,9 +91,11 @@ EOF
 
 pack(){ # name
 	local n="$1"
-	local f="$OUT/$n-v1.tar.gz"
+	local f="$OUT/$n-v2.tar.gz"
 	[ -f "$ST/$n/webui.conf" ] || : > "$ST/$n/webui.conf"
-	tar czf "$f" -C "$ST" "$n"
+	# 归档根目录必须是包内容本身（pluginctl 解包到 /tmp/plugins/<name>，
+	# 多套一层 <name>/ 会导致 usr/bin/<bin> 找不到，实测会 “not found”）
+	tar czf "$f" --owner=0 --group=0 --numeric-owner -C "$ST/$n" .
 	log "package $f $(stat -c%s "$f") bytes"
 }
 
@@ -106,7 +108,7 @@ if V=$(fetch_src ddns-go jeessy2/ddns-go) && gobuild ddns-go . "$WORK/bin/ddns-g
 	cat > "$ST/ddns-go/webui.conf" <<'EOF'
 desc|说明|text|装好后浏览器打开 http://192.168.8.1:9876 配置域名与 DNS 服务商
 EOF
-	pack ddns-go; echo "ddns-go|DDNS-GO|ddns-go-v1.tar.gz|$(stat -c%s "$OUT/ddns-go-v1.tar.gz")|$(sha256sum "$OUT/ddns-go-v1.tar.gz"|cut -d' ' -f1)|dns" >> "$OUT/.index"
+	pack ddns-go; echo "ddns-go|DDNS-GO|ddns-go-v2.tar.gz|$(stat -c%s "$OUT/ddns-go-v1.tar.gz")|$(sha256sum "$OUT/ddns-go-v1.tar.gz"|cut -d' ' -f1)|dns" >> "$OUT/.index"
 fi
 
 log "== mosdns"
@@ -151,7 +153,7 @@ desc|说明|text|默认监听 0.0.0.0:5353，上游 223.5.5.5/119.29.29.29，改
 EOF
 	# config.yaml 也要写进 manifest 的文件列表
 	sed -i 's/"webui.conf"\]/"webui.conf", "config.yaml"]/' "$ST/mosdns/manifest.json"
-	pack mosdns; echo "mosdns|MosDNS|mosdns-v1.tar.gz|$(stat -c%s "$OUT/mosdns-v1.tar.gz")|$(sha256sum "$OUT/mosdns-v1.tar.gz"|cut -d' ' -f1)|dns" >> "$OUT/.index"
+	pack mosdns; echo "mosdns|MosDNS|mosdns-v2.tar.gz|$(stat -c%s "$OUT/mosdns-v1.tar.gz")|$(sha256sum "$OUT/mosdns-v1.tar.gz"|cut -d' ' -f1)|dns" >> "$OUT/.index"
 fi
 
 log "== nps"
@@ -174,7 +176,7 @@ EOF
 desc|说明|text|管理面板 http://192.168.8.1:8080 账号 admin 密码 padavan，客户端连接端口 8024
 EOF
 	sed -i 's/"webui.conf"\]/"webui.conf", "nps.conf"]/' "$ST/nps/manifest.json"
-	pack nps; echo "nps|NPS内网穿透|nps-v1.tar.gz|$(stat -c%s "$OUT/nps-v1.tar.gz")|$(sha256sum "$OUT/nps-v1.tar.gz"|cut -d' ' -f1)|tunnel" >> "$OUT/.index"
+	pack nps; echo "nps|NPS内网穿透|nps-v2.tar.gz|$(stat -c%s "$OUT/nps-v1.tar.gz")|$(sha256sum "$OUT/nps-v1.tar.gz"|cut -d' ' -f1)|tunnel" >> "$OUT/.index"
 fi
 
 log "== trojan-go"
@@ -197,7 +199,7 @@ EOF
 desc|说明|text|把 config.example.json 复制成 /etc/storage/plugins/.home/trojan-go/config.json 填好服务器后启动
 EOF
 	sed -i 's/"webui.conf"\]/"webui.conf", "config.example.json"]/' "$ST/trojan-go/manifest.json"
-	pack trojan-go; echo "trojan-go|Trojan-Go|trojan-go-v1.tar.gz|$(stat -c%s "$OUT/trojan-go-v1.tar.gz")|$(sha256sum "$OUT/trojan-go-v1.tar.gz"|cut -d' ' -f1)|proxy" >> "$OUT/.index"
+	pack trojan-go; echo "trojan-go|Trojan-Go|trojan-go-v2.tar.gz|$(stat -c%s "$OUT/trojan-go-v1.tar.gz")|$(sha256sum "$OUT/trojan-go-v1.tar.gz"|cut -d' ' -f1)|proxy" >> "$OUT/.index"
 fi
 
 log "== gotty"
@@ -208,7 +210,7 @@ if V=$(fetch_src gotty sorenisanerd/gotty) && gobuild gotty . "$WORK/bin/gotty";
 	cat > "$ST/gotty/webui.conf" <<'EOF'
 desc|说明|text|浏览器打开 http://192.168.8.1:7681 直接操作路由器 shell
 EOF
-	pack gotty; echo "gotty|GoTTY网页终端|gotty-v1.tar.gz|$(stat -c%s "$OUT/gotty-v1.tar.gz")|$(sha256sum "$OUT/gotty-v1.tar.gz"|cut -d' ' -f1)|term" >> "$OUT/.index"
+	pack gotty; echo "gotty|GoTTY网页终端|gotty-v2.tar.gz|$(stat -c%s "$OUT/gotty-v1.tar.gz")|$(sha256sum "$OUT/gotty-v1.tar.gz"|cut -d' ' -f1)|term" >> "$OUT/.index"
 fi
 
 log "== filebrowser"
@@ -219,7 +221,7 @@ if V=$(fetch_src filebrowser filebrowser/filebrowser) && gobuild filebrowser . "
 	cat > "$ST/filebrowser/webui.conf" <<'EOF'
 desc|说明|text|浏览器打开 http://192.168.8.1:8088 首次进入创建管理员，可浏览全盘文件
 EOF
-	pack filebrowser; echo "filebrowser|FileBrowser文件管理|filebrowser-v1.tar.gz|$(stat -c%s "$OUT/filebrowser-v1.tar.gz")|$(sha256sum "$OUT/filebrowser-v1.tar.gz"|cut -d' ' -f1)|nas" >> "$OUT/.index"
+	pack filebrowser; echo "filebrowser|FileBrowser文件管理|filebrowser-v2.tar.gz|$(stat -c%s "$OUT/filebrowser-v1.tar.gz")|$(sha256sum "$OUT/filebrowser-v1.tar.gz"|cut -d' ' -f1)|nas" >> "$OUT/.index"
 fi
 
 log "== speedtest-go"
@@ -229,7 +231,7 @@ if V=$(fetch_src speedtest-go showwin/speedtest-go) && gobuild speedtest-go . "$
 	cat > "$ST/speedtest-go/webui.conf" <<'EOF'
 desc|说明|text|命令行工具：speedtest-go --server --all 选择节点，speedtest-go 直接测速
 EOF
-	pack speedtest-go; echo "speedtest-go|网络测速(Speedtest)|speedtest-go-v1.tar.gz|$(stat -c%s "$OUT/speedtest-go-v1.tar.gz")|$(sha256sum "$OUT/speedtest-go-v1.tar.gz"|cut -d' ' -f1)|net" >> "$OUT/.index"
+	pack speedtest-go; echo "speedtest-go|网络测速(Speedtest)|speedtest-go-v2.tar.gz|$(stat -c%s "$OUT/speedtest-go-v1.tar.gz")|$(sha256sum "$OUT/speedtest-go-v1.tar.gz"|cut -d' ' -f1)|net" >> "$OUT/.index"
 fi
 
 echo "================ SUMMARY"
@@ -251,7 +253,13 @@ if [ "$PUB" = "1" ]; then
 	cp "$WORK/idx/plugins.txt" "$WORK/plugins.txt"
 	while IFS='|' read -r n t f s h c; do
 		[ -n "$n" ] || continue
-		grep -q "^$n|" "$WORK/plugins.txt" || printf '%s|%s|%s|%s|%s|%s\n' "$n" "$t" "$f" "$s" "$h" "$c" >> "$WORK/plugins.txt"
+		if grep -q "^$n|" "$WORK/plugins.txt"; then
+			awk -F'|' -v n="$n" -v t="$t" -v f="$f" -v s="$s" -v h="$h" -v c="$c" \
+				'BEGIN{OFS="|"} $1==n{$1=n;$2=t;$3=f;$4=s;$5=h;$6=c} {print}' \
+				"$WORK/plugins.txt" > "$WORK/p.txt" && mv "$WORK/p.txt" "$WORK/plugins.txt"
+		else
+			printf '%s|%s|%s|%s|%s|%s\n' "$n" "$t" "$f" "$s" "$h" "$c" >> "$WORK/plugins.txt"
+		fi
 	done < "$OUT/.index"
 	gh release upload "$TAG" "$WORK/plugins.txt" --repo "$REPO" --clobber
 	log "plugins.txt now $(wc -l < "$WORK/plugins.txt") entries"

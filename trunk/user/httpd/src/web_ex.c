@@ -1196,7 +1196,7 @@ plugin_restart_from_apply(webs_t wp)
 	for (i = 0; map[i].page; i++) {
 		if (strcmp(pg, map[i].page))
 			continue;
-		snprintf(path, sizeof(path), "/etc/storage/plugins/%s/manifest.json",
+		snprintf(path, sizeof(path), "/tmp/plugins/%s/manifest.json",
 		         map[i].pkg);
 		if (access(path, R_OK))
 			return;
@@ -4332,7 +4332,8 @@ static char mentohust_log_txt[] =
  * tunnel, proxy ...); when that group is empty in this firmware build it is
  * enabled on the fly and points at Advanced_plugincat.asp.
  * ------------------------------------------------------------------------ */
-#define PLUGIN_STORE_DIR		"/etc/storage/plugins"
+#define PLUGIN_STORE_DIR		"/tmp/plugins"		/* payload: RAM, rebuilt by pluginctl restore */
+#define PLUGIN_DATA_DIR			"/etc/storage/plugins"	/* state/index/config: persisted */
 #define PLUGIN_WEB_DIR			"web"
 #define PLUGIN_MENU_CONF		"menu.conf"
 #define PLUGIN_DEFAULT_PAGE		"index.asp"
@@ -5020,7 +5021,7 @@ plugin_state_enabled(const char *pkg)
 	FILE *fp;
 	int ret = -1;
 
-	snprintf(path, sizeof(path), "%s/.state", PLUGIN_STORE_DIR);
+	snprintf(path, sizeof(path), "%s/.state", PLUGIN_DATA_DIR);
 	fp = fopen(path, "r");
 	if (!fp)
 		return -1;
@@ -5091,7 +5092,7 @@ plugin_config_get(const char *pkg, const char *key, char *out, size_t outlen)
 		return;
 	out[0] = '\0';
 
-	snprintf(path, sizeof(path), "%s/%s/%s", PLUGIN_STORE_DIR, pkg, PLUGIN_CONFIG_FILE);
+	snprintf(path, sizeof(path), "%s/%s/%s", PLUGIN_DATA_DIR, pkg, PLUGIN_CONFIG_FILE);
 	fp = fopen(path, "r");
 	if (!fp)
 		return;

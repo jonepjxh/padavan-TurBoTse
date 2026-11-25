@@ -1,16 +1,20 @@
 #!/bin/sh
 # pluginctl - lightweight plugin center for Padavan (pure busybox shell, no python/jq)
-# Installs standalone plugin packages from a GitHub Release into /etc/storage/plugins.
-# All state lives under /etc/storage (persisted by mtd_storage.sh).
+# Installs standalone plugin packages from a GitHub Release into /tmp/plugins (RAM).
+# Payload goes to /tmp because the 512K Storage MTD can not hold the binaries.
+# Small bookkeeping (index/state/plugin config) stays in /etc/storage/plugins so it
+# survives reboot; `restore` re-installs the payload once WAN is up.
 
-BASE="${PLUGIN_BASE:-/etc/storage/plugins}"
+BASE="${PLUGIN_BASE:-/tmp/plugins}"
+DATA="${PLUGIN_DATA:-/etc/storage/plugins}"
 # 支持用环境变量 PLUGIN_REPO_MIRROR 覆盖下载源（如自建反代或本地目录）
 RAW_BASE="${PLUGIN_REPO_MIRROR:-https://github.com/jonepjxh/padavan-TurBoTse/releases/download/plugin-repo}"
-STATE="$BASE/.state"
-INDEX="$BASE/.index"
-VIEW="$BASE/.view.txt"
+STATE="$DATA/.state"
+INDEX="$DATA/.index"
+VIEW="$DATA/.view.txt"
 
-mkdir -p "$BASE" 2>/dev/null
+mkdir -p "$BASE" "$DATA" 2>/dev/null
+ln -sf "$STATE" "$BASE/.state" 2>/dev/null
 
 log(){ logger -t pluginctl "$*"; echo "$*"; }
 
@@ -26,6 +30,7 @@ usage(){
     echo "  stop <name>          - run plugin stop script"
     echo "  menu                 - list plugin pages registered in the web menu"
     echo "  setcfg <name> k=v..  - save plugin settings (webui.conf fields)"
+    echo "  restore              - reinstall missing enabled plugins (boot hook)"
     echo "  status               - show installed/enabled state"
 }
 
@@ -69,22 +74,23 @@ state_get(){
 }
 state_set(){
     local name="$1" inst="$2" en="$3"
-    local tmp="$BASE/.state.tmp"
+    local tmp="$DATA/.state.tmp"
     # 没有 .state 时 awk 读不到文件会直接退出，END 分支不执行，导致状态写不进去
     [ -f "$STATE" ] || : > "$STATE"
     awk -F '\t' -v n="$name" -v i="$inst" -v e="$en" '
         $1==n{printf "%s\t%s\t%s\n",n,i,e;x=1;next}{print}
         END{if(!x) printf "%s\t%s\t%s\n",n,i,e}' "$STATE" 2>/dev/null > "$tmp"
     mv "$tmp" "$STATE"
+    ln -sf "$STATE" "$BASE/.state" 2>/dev/null
 }
 
 cmd_sync(){
-    mkdir -p "$BASE"
-    fetch "$RAW_BASE/plugins.txt" "$INDEX.tmp" || { log "sync failed: network"; return 1; }
-    [ -s "$INDEX.tmp" ] || { log "sync failed: empty index"; return 1; }
+    mkdir -p "$BASE" "$DATA"
+    fetch "$RAW_BASE/plugins.txt" "$DATA/.index.tmp" || { log "sync failed: network"; return 1; }
+    [ -s "$DATA/.index.tmp" ] || { log "sync failed: empty index"; return 1; }
     # keep only lines with 4 pipe fields
-    awk -F'|' 'NF>=4' "$INDEX.tmp" > "$INDEX"
-    rm -f "$INDEX.tmp"
+    awk -F'|' 'NF>=4' "$DATA/.index.tmp" > "$INDEX"
+    rm -f "$DATA/.index.tmp"
     cmd_list
     log "sync ok: $(wc -l < "$INDEX") plugins"
 }
@@ -113,13 +119,13 @@ cmd_list(){
     fi
     # 分类列兜底：在线索引只有 5 列（没有 cat），这里按包名补一个，
     # 让插件中心表格里的「分类」一栏和菜单归属保持一致。
-    : > "$VIEW.tmp"
+    : > "$DATA/.view.tmp"
     while IFS='|' read -r vn vt vf vs vi ve vc; do
         [ -n "$vn" ] || continue
         [ -n "$vc" ] || vc=$(plugin_cat_of "$vn")
         printf '%s|%s|%s|%s|%s|%s|%s\n' "$vn" "$vt" "$vf" "$vs" "$vi" "$ve" "$vc" >> "$VIEW.tmp"
     done < "$VIEW"
-    mv "$VIEW.tmp" "$VIEW"
+    mv "$DATA/.view.tmp" "$VIEW"
     cat "$VIEW"
 }
 
@@ -199,6 +205,55 @@ plugin_web_register(){
     log "menu registered: $title -> /plugin/$name/$page ${cat:+[$cat]}"
 }
 
+# ---- 插件配置：master 放在 DATA（持久），运行副本放 BASE（RAM） ----
+cfg_save(){
+    [ -f "$BASE/$1/config" ] || return 0
+    mkdir -p "$DATA/$1" 2>/dev/null
+    cp -f "$BASE/$1/config" "$DATA/$1/config" 2>/dev/null
+}
+cfg_load(){
+    [ -f "$DATA/$1/config" ] || return 0
+    cp -f "$DATA/$1/config" "$BASE/$1/config" 2>/dev/null
+}
+
+# 开机钩子：WAN 起来后把已启用但目录缺失的插件装回来
+POSTWAN=/etc/storage/post_wan_script.sh
+register_restore_hook(){
+    [ -f "$POSTWAN" ] || return 0
+    grep -q 'pluginctl restore' "$POSTWAN" 2>/dev/null && return 0
+    echo '[ -x /usr/bin/pluginctl ] && ( sleep 8; /usr/bin/pluginctl restore >/dev/null 2>&1 ) &' >> "$POSTWAN"
+}
+
+cmd_restore(){
+    [ -f "$STATE" ] || { log "restore: no state file"; return 0; }
+    # 防并发：post_wan 可能触发多次
+    if ! mkdir /tmp/.pc-restore.lock 2>/dev/null; then
+        log "restore: already running"; return 0
+    fi
+    local name inst en
+    while IFS="$(printf '\t')" read -r name inst en; do
+        [ -n "$name" ] || continue
+        case "$name" in \#*) continue ;; esac
+        [ "$inst" = "1" ] || continue
+        if [ ! -d "$BASE/$name" ]; then
+            log "restore: installing $name"
+            cmd_install "$name" >/dev/null 2>&1
+            if [ ! -d "$BASE/$name" ]; then
+                log "restore: $name failed (network?)"
+                continue
+            fi
+        else
+            cfg_load "$name"
+        fi
+        if [ "$en" = "1" ] && [ -x "$BASE/$name/start.sh" ]; then
+            "$BASE/$name/start.sh" >/dev/null 2>&1 &
+        fi
+    done < "$STATE"
+    cmd_list >/dev/null 2>&1
+    rmdir /tmp/.pc-restore.lock 2>/dev/null
+    log "restore done"
+}
+
 cmd_install(){
     local name="$1"
     [ -n "$name" ] || { echo "ERR: no plugin name"; return 1; }
@@ -216,6 +271,7 @@ cmd_install(){
     rm -rf "$dest"; mkdir -p "$dest"
     tar -xzf "$tmp" -C "$dest" || { log "extract failed"; rm -f "$tmp"; return 1; }
     rm -f "$tmp"
+    cfg_load "$name"
     # symlink binaries into /opt/bin (in PATH). Prefer /opt/bin if writable, else /etc/storage/bin.
     local linkdir=/opt/bin
     # /opt 在部分固件里是只读的或压根没挂载，退到 /etc/storage/bin（持久化）
@@ -263,6 +319,7 @@ register_autostart(){
     grep -q "# pc:$name" "$AUTOSTART" 2>/dev/null || \
         echo "[ -x $BASE/$name/start.sh ] && $BASE/$name/start.sh >/dev/null 2>&1 & # pc:$name" >> "$AUTOSTART"
     chmod 755 "$AUTOSTART" 2>/dev/null
+    register_restore_hook
     local s=/etc/storage/started_script.sh
     [ -f "$s" ] || return 0
     grep -q 'plugin_autostart.sh' "$s" 2>/dev/null || \
@@ -306,6 +363,7 @@ cmd_setcfg(){
         fi
     done
     chmod 644 "$f" 2>/dev/null
+    cfg_save "$name"
     echo "OK: saved $name config"
 }
 
@@ -352,5 +410,5 @@ case "$1" in
     sync) cmd_sync ;; list) cmd_list ;; install) cmd_install "$2" ;; remove) cmd_remove "$2" ;;
     enable) cmd_enable "$2" ;; disable) cmd_disable "$2" ;; start) cmd_start "$2" ;;
     stop) cmd_stop "$2" ;; menu) cmd_menu ;; status) cmd_status ;;
-    setcfg) shift; cmd_setcfg "$@" ;; *) usage ;;
+    setcfg) shift; cmd_setcfg "$@" ;; restore) cmd_restore ;; *) usage ;;
 esac

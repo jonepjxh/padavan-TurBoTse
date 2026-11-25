@@ -98,34 +98,38 @@ cmd_sync(){
 # produce VIEW: name|title|file|size|installed|enabled
 cmd_list(){
     [ -f "$INDEX" ] || { echo 'NO_INDEX'; return 1; }
-    if [ -s "$STATE" ]; then
-        awk -F'|' '
-            FNR==NR {
-                # state lines are TAB separated: name<TAB>installed<TAB>enabled
-                nf=split($0,a,"\t"); if(nf>=1) st[a[1]]=(nf>1?a[2]:"0")","(nf>2?a[3]:"0"); next
-            }
-            {
-                if (NF < 4) next;
-                name=$1; inst="0"; en="0";
-                if (name in st){ split(st[name],b,","); inst=b[1]; en=b[2] }
-                printf "%s|%s|%s|%s|%s|%s|%s\n", $1,$2,$3,$4,inst,en,(NF>=6?$6:"")
-            }
-        ' "$STATE" "$INDEX" > "$VIEW" || \
-            awk -F'|' 'NF>=4{printf "%s|%s|%s|%s|0|0|%s\n",$1,$2,$3,$4,(NF>=6?$6:"")}' "$INDEX" > "$VIEW"
-    else
-        # 全新设备没有 .state（或为空）：直接补 installed/enabled=0。
-        # 不能给 awk 传空 state 文件——两文件模式下 FNR==NR 会恒为真，把 index 全部行吞掉。
-        awk -F'|' 'NF>=4{printf "%s|%s|%s|%s|0|0|%s\n",$1,$2,$3,$4,(NF>=6?$6:"")}' "$INDEX" > "$VIEW"
-    fi
-    # 分类列兜底：在线索引只有 5 列（没有 cat），这里按包名补一个，
-    # 让插件中心表格里的「分类」一栏和菜单归属保持一致。
-    : > "$DATA/.view.tmp"
-    while IFS='|' read -r vn vt vf vs vi ve vc; do
-        [ -n "$vn" ] || continue
-        [ -n "$vc" ] || vc=$(plugin_cat_of "$vn")
-        printf '%s|%s|%s|%s|%s|%s|%s\n' "$vn" "$vt" "$vf" "$vs" "$vi" "$ve" "$vc" >> "$VIEW.tmp"
-    done < "$VIEW"
-    mv "$DATA/.view.tmp" "$VIEW"
+    # 一次 awk 出结果：index（5 列：name|title|file|size|sha256）与 .state（TSV）合并，
+    # 分类列在线索引里没有，按包名在 awk 内推导，避免 shell 循环里逐行改写文件
+    # （旧写法在 busybox 上 48 行只落地 1 行、最后 .view.txt 变成 0 字节）。
+    local tmp="$DATA/.view.tmp"
+    awk -F'|' -v stf="$STATE" '
+function catof(n,   t){
+    t = tolower(n);
+    if (t ~ /adbyby|adguard|adblock|nanoad|adg/) return "ad";
+    if (t ~ /smartdns|dnsmasq|mosdns|dnscrypt|stubby|chinadns|dns2tcp|dnsproxy|dnsforwarder|pdnsd/) return "dns";
+    if (t ~ /xray|v2ray|clash|trojan|shadowsocks|ssr|singbox|sing-box|redsocks|microsocks|srelay|ipt2socks|3proxy|obfs/) return "proxy";
+    if (t ~ /frp|zerotier|ddnsto|tailscale|wireguard|aliddns|nps|ngrok/) return "tunnel";
+    if (t ~ /alist|aliyun|aldriver|webdav|aria2|transmission|xupnpd|vsftpd|samba|ftp/) return "nas";
+    if (t ~ /speedtest|iperf|mtr|nload|iftop|tcpdump|nethogs|vnstat|bwmon/) return "net";
+    if (t ~ /htop|nano|vim|tmux|ttyd|dropbear|openssh|shellinabox/) return "term";
+    if (t ~ /campus|srun|drcom|uap|h3c|ruijie/) return "campus";
+    if (t ~ /sqm|qos|bwm|tc/) return "qos";
+    return "misc";
+}
+BEGIN {
+    while ((getline l < stf) > 0) {
+        k = split(l, a, "\t");
+        if (a[1] == "") continue;
+        st[a[1]] = ((k > 1 && a[2] != "") ? a[2] : "0") "," ((k > 2 && a[3] != "") ? a[3] : "0");
+    }
+    close(stf);
+}
+NF >= 4 {
+    inst = "0"; en = "0";
+    if ($1 in st) { split(st[$1], b, ","); inst = b[1]; en = b[2] }
+    c = (NF >= 6 && $6 != "") ? $6 : catof($1);
+    printf "%s|%s|%s|%s|%s|%s|%s\n", $1, $2, $3, $4, inst, en, c;
+}' "$INDEX" > "$tmp" && mv "$tmp" "$VIEW"
     cat "$VIEW"
 }
 

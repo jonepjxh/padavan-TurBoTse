@@ -1,0 +1,31 @@
+name: Export libatomic (mipsel musl)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch musl cross toolchain
+        run: |
+          curl -fL --retry 3 -o musl.tgz https://musl.cc/mipsel-linux-musl-cross.tgz
+          tar xzf musl.tgz
+          ls -l mipsel-linux-musl-cross/mipsel-linux-musl/lib/libatomic*
+
+      - name: Collect libs
+        run: |
+          mkdir -p out
+          cp mipsel-linux-musl-cross/mipsel-linux-musl/lib/libatomic.so.1* out/ || true
+          cp mipsel-linux-musl-cross/mipsel-linux-musl/lib/libgcc_s.so.1* out/ || true
+          ls -l out
+
+      - name: Publish to plugin-repo
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: plugin-repo
+          files: out/*
+          fail_on_unmatched_files: false

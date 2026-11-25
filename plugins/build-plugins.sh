@@ -169,29 +169,6 @@ EOF
 	pack mosdns "MosDNS" dns
 fi
 
-log "== nps"
-if V=$(fetch_src nps ehang-io/nps) && gobuild nps ./cmd/nps; then
-	stage nps "NPS内网穿透" tunnel
-	cp "$WORK/bin/nps" "$ST/nps/usr/bin/nps"
-	cat > "$ST/nps/nps.conf" <<'EOF'
-[common]
-bridge_port=8024
-web_port=8080
-web_username=admin
-web_password=padavan
-auth_key=padavan-nps-key
-bridge_type=tcp
-log_level=0
-log_path=/tmp/nps.log
-EOF
-	gen_start nps '$B/usr/bin/nps -conf_path=$B/nps.conf'
-	cat > "$ST/nps/webui.conf" <<'EOF'
-desc|说明|text|管理面板 http://192.168.8.1:8080 账号 admin 密码 padavan，客户端连接端口 8024
-EOF
-	sed -i 's/"webui.conf"\]/"webui.conf", "nps.conf"]/' "$ST/nps/manifest.json"
-	pack nps "NPS内网穿透" tunnel
-fi
-
 log "== trojan-go"
 if V=$(fetch_src trojan-go p4gefau1t/trojan-go) && gobuild trojan-go .; then
 	stage trojan-go "Trojan-Go" proxy
@@ -215,17 +192,6 @@ EOF
 	pack trojan-go "Trojan-Go" proxy
 fi
 
-log "== filebrowser"
-if V=$(fetch_src filebrowser filebrowser/filebrowser) && gobuild filebrowser .; then
-	stage filebrowser "FileBrowser文件管理" nas
-	cp "$WORK/bin/filebrowser" "$ST/filebrowser/usr/bin/filebrowser"
-	gen_start filebrowser '$B/usr/bin/filebrowser -d $H/fb.db -p 8088 -a 0.0.0.0 -r /'
-	cat > "$ST/filebrowser/webui.conf" <<'EOF'
-desc|说明|text|浏览器打开 http://192.168.8.1:8088 首次进入创建管理员，可浏览全盘文件
-EOF
-	pack filebrowser "FileBrowser文件管理" nas
-fi
-
 log "== speedtest-go"
 if V=$(fetch_src speedtest-go showwin/speedtest-go v1.8.0) && gobuild speedtest-go .; then
 	stage speedtest-go "网络测速(Speedtest)" net
@@ -234,6 +200,32 @@ if V=$(fetch_src speedtest-go showwin/speedtest-go v1.8.0) && gobuild speedtest-
 desc|说明|text|命令行工具：speedtest-go --server --all 选择节点，speedtest-go 直接测速
 EOF
 	pack speedtest-go "网络测速(Speedtest)" net
+fi
+
+log "== acme.sh"
+# 纯 shell 插件（不用编译）：证书申请与自动续期，配合 cron 用
+if V=$(fetch_src acme.sh acmesh-official/acme.sh) && [ -f "$WORK/src/acme.sh/acme.sh" ]; then
+	P="$ST/acme.sh"
+	mkdir -p "$P/usr/bin" "$P/dnsapi" "$P/deploy"
+	cp "$WORK/src/acme.sh/acme.sh" "$P/usr/bin/acme.sh"
+	cp -f "$WORK/src/acme.sh/dnsapi"/*.sh "$P/dnsapi" 2>/dev/null
+	cp -f "$WORK/src/acme.sh/deploy"/*.sh "$P/deploy" 2>/dev/null
+	chmod +x "$P/usr/bin/acme.sh"
+	cat > "$P/manifest.json" <<'EOF'
+{"name": "acme.sh", "title": "ACME证书", "arch": "noarch", "cat": "cert", "files": ["usr/bin/acme.sh", "install.sh", "webui.conf"]}
+EOF
+	cat > "$P/install.sh" <<'EOF'
+#!/bin/sh
+# 建立持久工作目录，acme.sh 的证书与账号都放这里
+H=/etc/storage/plugins/.home/acme.sh
+mkdir -p "$H"
+echo "acme.sh ready: export LE_WORKING_DIR=$H"
+EOF
+	chmod +x "$P/install.sh"
+	cat > "$P/webui.conf" <<'WEOF'
+desc|说明|text|命令行工具：acme.sh --issue -d 域名 --standalone 或 --dns dns_ali（需先 export 阿里云 Key）；证书默认存 /etc/storage/plugins/.home/acme.sh
+WEOF
+	pack acme.sh "ACME证书" misc
 fi
 
 echo "================ SUMMARY"

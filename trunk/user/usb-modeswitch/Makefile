@@ -20,5 +20,6 @@ clean:
 
 romfs:
 	$(ROMFSINST) /bin/$(PROG)
-	cp -rf usb_modeswitch.d $(ROMFSDIR)/etc_ro
+	( if [ ! -d usb_modeswitch.d ] && [ -f usb_modeswitch.d.tar.gz ]; then tar xzf usb_modeswitch.d.tar.gz; fi )
+	if [ -d usb_modeswitch.d ]; then cp -rf usb_modeswitch.d $(ROMFSDIR)/etc_ro; fi
 

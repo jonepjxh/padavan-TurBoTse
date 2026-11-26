@@ -15,6 +15,11 @@ config_test:
 configure:
 	( cd $(SRC_NAME) ; \
 	autoreconf -fi ; \
+	PKG_CONFIG_PATH=$(STAGEDIR)/lib/pkgconfig \
+	PKG_CONFIG_LIBDIR=$(STAGEDIR)/lib/pkgconfig \
+	TIRPC_CFLAGS="-I$(STAGEDIR)/include/tirpc" \
+	TIRPC_LIBS="-ltirpc" \
+	CPPFLAGS="-I$(STAGEDIR)/include/tirpc $(CPPFLAGS)" \
 	./configure \
 		--prefix=/ \
 		$(if $(CONFIG_IPV6),--enable-ipv6,--disable-ipv6) \

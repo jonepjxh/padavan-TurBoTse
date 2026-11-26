@@ -921,6 +921,7 @@ handle_request(FILE *conn_fp, const conn_item_t *item)
 	char *method, *path, *protocol, *authorization, *boundary;
 	char *cur, *end, *cp, *file, *query;
 	int len, login_state, method_id, do_logout, clen = 0;
+	int is_plugin_file = 0;
 	time_t if_modified_since = (time_t)-1;
 	struct mime_handler *handler;
 	struct stat st, *p_st = NULL;
@@ -1034,8 +1035,10 @@ handle_request(FILE *conn_fp, const conn_item_t *item)
 	{
 		char *plugin_path = plugin_web_path(file);
 
-		if (plugin_path != NULL)
+		if (plugin_path != NULL) {
 			file = plugin_path;
+			is_plugin_file = 1;
+		}
 	}
 
 	usockaddr_to_uaddr(&item->usa, &conn_ip);
@@ -1064,6 +1067,11 @@ handle_request(FILE *conn_fp, const conn_item_t *item)
 		send_error( 404, "Not Found", NULL, "URL was not found.", conn_fp );
 		return;
 	}
+
+	/* 插件页面在 /etc/storage（不在只读 /www 里），do_ej 按 /www 相对路径找文件
+	 * 会读不到内容、返回空响应；这类页面直接用静态文件输出。 */
+	if (is_plugin_file && handler->output == do_ej)
+		handler->output = do_file;
 
 #if defined (SUPPORT_HTTPS)
 	http_is_ssl = item->ssl;

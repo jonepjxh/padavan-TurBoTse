@@ -86,7 +86,8 @@ state_set(){
 
 cmd_sync(){
     mkdir -p "$BASE" "$DATA"
-    fetch "$RAW_BASE/plugins.txt" "$DATA/.index.tmp" || { log "sync failed: network"; return 1; }
+    # 带时间戳查询串：gh-proxy 一类镜像会缓存 plugins.txt，导致新版本插件永远刷不出来
+    fetch "$RAW_BASE/plugins.txt?pc=$(date +%s)" "$DATA/.index.tmp" || { log "sync failed: network"; return 1; }
     [ -s "$DATA/.index.tmp" ] || { log "sync failed: empty index"; return 1; }
     # keep only lines with 4 pipe fields
     awk -F'|' 'NF>=4' "$DATA/.index.tmp" > "$INDEX"
@@ -244,8 +245,31 @@ cfg_load(){
 POSTWAN=/etc/storage/post_wan_script.sh
 register_restore_hook(){
     [ -f "$POSTWAN" ] || return 0
-    grep -q 'pluginctl restore' "$POSTWAN" 2>/dev/null && return 0
-    echo '[ -x /usr/bin/pluginctl ] && ( sleep 8; /usr/bin/pluginctl restore >/dev/null 2>&1 ) &' >> "$POSTWAN"
+    if ! grep -q 'pluginctl restore' "$POSTWAN" 2>/dev/null; then
+        echo '[ -x /usr/bin/pluginctl ] && ( sleep 8; /usr/bin/pluginctl restore >/dev/null 2>&1 ) &' >> "$POSTWAN"
+    fi
+    # 第二遍：WAN 慢的时候 8 秒还没拿到 DNS，45 秒后再兜一次（restore 幂等）
+    if ! grep -q 'pc-restore-retry' "$POSTWAN" 2>/dev/null; then
+        echo '[ -x /usr/bin/pluginctl ] && ( sleep 45; /usr/bin/pluginctl restore >/dev/null 2>&1 ) & # pc-restore-retry' >> "$POSTWAN"
+    fi
+}
+
+# 重试安装：WAN 刚起来时 DNS/代理链路经常还没通，单次失败就放弃会让插件
+# 菜单在重启后消失。最多 3 轮（0s / 15s / 45s），成功即返回。
+restore_install(){
+    local name="$1" en="$2" try=1
+    while [ "$try" -le 3 ]; do
+        log "restore: installing $name (try $try/3)"
+        cmd_install "$name" >/dev/null 2>&1
+        # cmd_install 默认置 installed=1 enabled=0，这里恢复原来的启用标记
+        state_set "$name" 1 "$en"
+        [ -d "$BASE/$name" ] && return 0
+        log "restore: $name try $try failed"
+        [ "$try" -lt 3 ] && sleep $((try * 15))
+        try=$((try + 1))
+    done
+    log "restore: $name gave up (no network?)"
+    return 1
 }
 
 cmd_restore(){
@@ -260,14 +284,7 @@ cmd_restore(){
         case "$name" in \#*) continue ;; esac
         [ "$inst" = "1" ] || continue
         if [ ! -d "$BASE/$name" ]; then
-            log "restore: installing $name"
-            cmd_install "$name" >/dev/null 2>&1
-            # cmd_install 默认置 installed=1 enabled=0，这里恢复原来的启用标记
-            state_set "$name" 1 "$en"
-            if [ ! -d "$BASE/$name" ]; then
-                log "restore: $name failed (network?)"
-                continue
-            fi
+            restore_install "$name" "$en" || continue
         else
             cfg_load "$name"
             if [ "$BASE" != "$DATA" ] && [ ! -L "$DATA/$name" ]; then

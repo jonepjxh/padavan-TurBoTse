@@ -63,6 +63,9 @@ jobs:
           # 1) 打开 CPU 超频开关（B70 模板默认 INCLUDE_OC=n，OC 值 0x312 已被注释但未生效）
           sed -i 's/^CONFIG_FIRMWARE_INCLUDE_OC=n$/CONFIG_FIRMWARE_INCLUDE_OC=y/' $CFG
           sed -i 's/^CONFIG_FIRMWARE_MT7621_OC=.*$/CONFIG_FIRMWARE_MT7621_OC="0x312"/' $CFG
+          # NFS 服务/客户端与本构建环境的主机 rpc 头文件冲突（nfs-utils configure 失败），默认关闭
+          sed -i 's/^CONFIG_FIRMWARE_INCLUDE_NFSD=.*$/CONFIG_FIRMWARE_INCLUDE_NFSD=n/' $CFG
+          sed -i 's/^CONFIG_FIRMWARE_INCLUDE_NFSC=.*$/CONFIG_FIRMWARE_INCLUDE_NFSC=n/' $CFG
           grep -E 'CONFIG_FIRMWARE_(INCLUDE_OC|MT7621_OC)' $CFG
 
           # 2) 无线默认参数优化（两块射频：MT7603E 2.4G + MT7612E 5G）

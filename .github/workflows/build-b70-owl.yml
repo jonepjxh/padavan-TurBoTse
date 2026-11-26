@@ -38,7 +38,9 @@ jobs:
         grep -n 'reload_nat_modules();' trunk/user/rc/net6.c | head -3
         grep -n 'plugin_center' trunk/user/httpd/web_ex.c
         grep -n 'CONFIG_FIRMWARE_ENABLE_IPV6' trunk/configs/templates/HC5962.config
-        grep -n 'Advanced_plugincenter.asp' trunk/user/www/n56u_ribbon_fixed/state.js
+        ls -l trunk/user/httpd/plugin_center.c
+        grep -n 'plugin_detail\|plugin_webui' trunk/user/httpd/web_ex.c
+        grep -n 'do_js' trunk/user/httpd/web_ex.c
         if grep -q 'menu5_30' trunk/user/www/n56u_ribbon_fixed/state.js; then echo "穿透服务菜单未移除"; exit 1; fi
         if grep -q 'Advanced_wireguard.asp' trunk/user/www/n56u_ribbon_fixed/state.js; then echo "wireguard 页面仍挂菜单"; exit 1; fi
 

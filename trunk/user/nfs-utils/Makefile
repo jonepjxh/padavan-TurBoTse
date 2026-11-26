@@ -28,6 +28,9 @@ configure:
 	./autogen.sh ; \
 	knfsd_cv_bsd_signals=no \
 	PKG_CONFIG_PATH=$(STAGEDIR)/lib/pkgconfig \
+	TIRPC_CFLAGS="-I$(STAGEDIR)/include/tirpc" \
+	TIRPC_LIBS="-ltirpc" \
+	CPPFLAGS="-I$(STAGEDIR)/include/tirpc $(CPPFLAGS)" \
 	./configure \
 		--prefix=/ \
 		$(if $(CONFIG_IPV6),--enable-ipv6,--disable-ipv6) \

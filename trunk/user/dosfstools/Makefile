@@ -6,6 +6,14 @@ LDFLAGS += -Wl,--gc-sections
 
 #all: download_test extract_test config_test
 all: config_test
+	( cd $(SRC_NAME) ; \
+		find . -name '*.ac' | xargs -r touch ; \
+		find . -name '*.am' | xargs -r touch ; \
+		find . -name '*.m4' ! -name 'aclocal.m4' | xargs -r touch ; \
+		sleep 1 ; touch aclocal.m4 ; \
+		sleep 1 ; touch configure config.h.in ; \
+		sleep 1 ; find . -name 'Makefile.in' | xargs -r touch ; \
+	)
 	$(MAKE) -j$(HOST_NCPU) -C $(SRC_NAME)
 
 download_test:

@@ -43,6 +43,9 @@ jobs:
         grep -n 'do_js' trunk/user/httpd/web_ex.c
         if grep -q 'menu5_30' trunk/user/www/n56u_ribbon_fixed/state.js; then echo "穿透服务菜单未移除"; exit 1; fi
         if grep -q 'Advanced_wireguard.asp' trunk/user/www/n56u_ribbon_fixed/state.js; then echo "wireguard 页面仍挂菜单"; exit 1; fi
+        ls -l owl-musl/
+        grep -n 'owl-musl/ld-musl-mipsel.so.1' trunk/Makefile
+        grep -n 'ensure_optbin\|relink_plugin' trunk/user/scripts/pluginctl | head -5
 
     - name: Configure HC5962 with OC 1000MHz
       run: |

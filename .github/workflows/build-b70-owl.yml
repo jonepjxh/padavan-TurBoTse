@@ -71,6 +71,9 @@ jobs:
         ls -l /opt/rt-n56u/trunk/romfs/www/Advanced_plugincenter.asp
         ls -l /opt/rt-n56u/trunk/romfs/usr/bin/pluginctl
         test -x /opt/rt-n56u/trunk/romfs/usr/bin/pluginctl
+        ls -l /opt/rt-n56u/trunk/romfs/lib/ld-musl-mipsel.so.1
+        ls -l /opt/rt-n56u/trunk/romfs/lib/libc.so
+        test -s /opt/rt-n56u/trunk/romfs/lib/ld-musl-mipsel.so.1
 
     - name: Upload firmware
       uses: actions/upload-artifact@v4
